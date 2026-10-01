@@ -72,7 +72,7 @@ veritas/
 ## Getting Started
 
 ```bash
-git clone https://github.com/<username>/veritas.git
+git clone https://github.com/focusedaf/veritas.git
 cd veritas
 npm install
 
