@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 async function main() {
-  const { viem } = await network.create();
+  const { viem, networkName } = await network.create();
   const [deployer, arbitrator] = await viem.getWalletClients();
 
   if (!deployer || !arbitrator) {
@@ -17,7 +17,7 @@ async function main() {
     throw new Error("Deployer and arbitrator must be different accounts.");
   }
 
-  console.log("Deploying Escrow...");
+  console.log(`Deploying Escrow to ${networkName}...`);
   console.log("Deployer:", deployer.account.address);
   console.log("Arbitrator:", arbitrator.account.address);
 
@@ -38,7 +38,7 @@ async function main() {
     path.join(outputDir, "address.json"),
     JSON.stringify(
       {
-        network: process.env.DEPLOYMENT_NETWORK ?? "localhost",
+        network: networkName,
         address: escrow.address,
       },
       null,
