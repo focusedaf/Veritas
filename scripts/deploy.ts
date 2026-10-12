@@ -1,4 +1,6 @@
 import { network } from "hardhat";
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 
 async function main() {
   const { viem } = await network.create();
@@ -23,8 +25,28 @@ async function main() {
     arbitrator.account.address,
   ]);
 
-  console.log("Contract deployed at:", escrow.address);
-  console.log("Arbitrator address:", await escrow.read.arbitrator());
+  const actualArbitrator = await escrow.read.arbitrator();
+
+  console.log("Escrow deployed at:", escrow.address);
+  console.log("Configured arbitrator:", actualArbitrator);
+
+  const outputDir = path.join(process.cwd(), "frontend", "lib", "contract");
+
+  await mkdir(outputDir, { recursive: true });
+
+  await writeFile(
+    path.join(outputDir, "address.json"),
+    JSON.stringify(
+      {
+        network: process.env.DEPLOYMENT_NETWORK ?? "localhost",
+        address: escrow.address,
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+
+  console.log("Contract address exported successfully.");
 }
 
 main().catch((error) => {
