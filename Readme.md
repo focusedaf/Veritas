@@ -71,11 +71,64 @@ veritas/
 
 ## Getting Started
 
-```bash
-git clone https://github.com/focusedaf/veritas.git
-cd veritas
-npm install
+### Prerequisites
 
+- Node.js and npm
+- Git
+
+### Installation
+
+```bash
+git clone https://github.com/focusedaf/Veritas.git
+cd Veritas
+npm install
+```
+
+### Compile and Test
+
+```bash
 npx hardhat compile
 npx hardhat test
 ```
+
+### Local Deployment
+
+To deploy the contract to a persistent local Hardhat node, use two terminals.
+
+**Terminal 1 — Start the local blockchain**
+
+```bash
+npx hardhat node
+```
+
+Keep this terminal running.
+
+**Terminal 2 — Deploy the contract**
+
+```bash
+npx hardhat run scripts/deploy.ts --network localhost
+```
+
+The deployment script prints the deployed contract address and exports the address to `frontend/lib/contract/address.json`.
+
+### Export the Contract ABI
+
+After compiling the contract, export its ABI for frontend integration:
+
+```bash
+npx hardhat compile
+npx hardhat run scripts/export-contract.ts
+```
+
+The ABI is saved to `frontend/lib/contract/Escrow.json`.
+
+### Frontend Setup
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Configure the frontend to use the deployed contract address and the local network before interacting with the contract.
+

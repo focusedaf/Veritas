@@ -36,7 +36,7 @@ describe("Escrow", () => {
   let escrow: any;
 
   beforeEach(async () => {
-    const connection = await network.connect();
+    const connection = await network.create();
     viem = connection.viem;
     time = connection.networkHelpers.time;
     publicClient = await viem.getPublicClient();
