@@ -1,16 +1,13 @@
-
 "use client";
 
-import {
-  getEscrowContract,
-  CONTRACT_ADDRESS,
-} from "@/lib/contract";
+import { getEscrowContract, CONTRACT_ADDRESS } from "@/lib/contract";
 import { useEffect, useState } from "react";
 import { BrowserProvider, isAddress, parseEther } from "ethers";
 
 type MilestoneInput = {
   description: string;
   amount: string;
+  deadline: string;
 };
 
 export default function Home() {
@@ -21,13 +18,12 @@ export default function Home() {
 
   const [freelancer, setFreelancer] = useState("");
   const [milestones, setMilestones] = useState<MilestoneInput[]>([
-    { description: "", amount: "" },
+    { description: "", amount: "", deadline: "" },
   ]);
 
   const totalEth = milestones.reduce(
-    (total, milestone) =>
-      total + (Number(milestone.amount) || 0),
-    0
+    (total, milestone) => total + (Number(milestone.amount) || 0),
+    0,
   );
 
   async function getProvider() {
@@ -40,7 +36,7 @@ export default function Home() {
 
     if (Number(networkInfo.chainId) !== 31337) {
       throw new Error(
-        "Please switch MetaMask to Hardhat Local (Chain ID 31337)."
+        "Please switch MetaMask to Hardhat Local (Chain ID 31337).",
       );
     }
 
@@ -54,23 +50,16 @@ export default function Home() {
       }
 
       const provider = new BrowserProvider(window.ethereum);
-      const accounts = await provider.send(
-        "eth_requestAccounts",
-        []
-      );
+      const accounts = await provider.send("eth_requestAccounts", []);
       const networkInfo = await provider.getNetwork();
 
       setAccount(accounts[0] || "");
-      setNetwork(
-        `${networkInfo.name} (Chain ID: ${networkInfo.chainId})`
-      );
+      setNetwork(`${networkInfo.name} (Chain ID: ${networkInfo.chainId})`);
       setMessage("Wallet connected successfully!");
     } catch (error) {
       console.error(error);
       setMessage(
-        error instanceof Error
-          ? error.message
-          : "Wallet connection failed."
+        error instanceof Error ? error.message : "Wallet connection failed.",
       );
     }
   }
@@ -89,14 +78,12 @@ export default function Home() {
       const provider = new BrowserProvider(window.ethereum);
       const networkInfo = await provider.getNetwork();
 
-      setNetwork(
-        `${networkInfo.name} (Chain ID: ${networkInfo.chainId})`
-      );
+      setNetwork(`${networkInfo.name} (Chain ID: ${networkInfo.chainId})`);
       setMessage("Switched to Hardhat Local!");
     } catch (error) {
       console.error(error);
       setMessage(
-        "Network switch failed. Check that Hardhat Local is added in MetaMask."
+        "Network switch failed. Check that Hardhat Local is added in MetaMask.",
       );
     }
   }
@@ -110,21 +97,19 @@ export default function Home() {
 
       if (code === "0x") {
         throw new Error(
-          "No contract found. Check the address and redeploy if needed."
+          "No contract found. Check the address and redeploy if needed.",
         );
       }
 
       const contract = await getEscrowContract();
 
       setMessage(
-        `Success! Escrow contract detected at ${await contract.getAddress()}`
+        `Success! Escrow contract detected at ${await contract.getAddress()}`,
       );
     } catch (error) {
       console.error(error);
       setMessage(
-        error instanceof Error
-          ? error.message
-          : "Contract test failed."
+        error instanceof Error ? error.message : "Contract test failed.",
       );
     }
   }
@@ -132,14 +117,12 @@ export default function Home() {
   function updateMilestone(
     index: number,
     field: keyof MilestoneInput,
-    value: string
+    value: string,
   ) {
     setMilestones((current) =>
       current.map((milestone, i) =>
-        i === index
-          ? { ...milestone, [field]: value }
-          : milestone
-      )
+        i === index ? { ...milestone, [field]: value } : milestone,
+      ),
     );
   }
 
@@ -151,15 +134,13 @@ export default function Home() {
 
     setMilestones((current) => [
       ...current,
-      { description: "", amount: "" },
+      { description: "", amount: "", deadline: "" },
     ]);
     setMessage("");
   }
 
   function removeMilestone(index: number) {
-    setMilestones((current) =>
-      current.filter((_, i) => i !== index)
-    );
+    setMilestones((current) => current.filter((_, i) => i !== index));
     setMessage("");
   }
 
@@ -185,14 +166,10 @@ export default function Home() {
         throw new Error("Add between 1 and 20 milestones.");
       }
 
-      const descriptions = milestones.map((m) =>
-        m.description.trim()
-      );
+      const descriptions = milestones.map((m) => m.description.trim());
 
       if (descriptions.some((description) => !description)) {
-        throw new Error(
-          "Enter a description for every milestone."
-        );
+        throw new Error("Enter a description for every milestone.");
       }
 
       const amounts = milestones.map((m) => {
@@ -201,34 +178,46 @@ export default function Home() {
           !Number.isFinite(Number(m.amount)) ||
           Number(m.amount) <= 0
         ) {
-          throw new Error(
-            "Every milestone must have a positive ETH amount."
-          );
+          throw new Error("Every milestone must have a positive ETH amount.");
         }
 
         try {
           const amount = parseEther(m.amount);
 
-if (amount <= BigInt(0)) {            throw new Error("Amount must be positive.");
+          if (amount <= BigInt(0)) {
+            throw new Error("Amount must be positive.");
           }
 
           return amount;
         } catch {
           throw new Error(
-            "Enter valid ETH amounts with at most 18 decimal places."
+            "Enter valid ETH amounts with at most 18 decimal places.",
           );
         }
       });
+      
+      const deadlines = milestones.map((milestone) => {
+        if (!milestone.deadline) {
+          throw new Error("Please set a deadline for every milestone.");
+        }
 
+        const deadlineMs = new Date(milestone.deadline).getTime();
+
+        if (!Number.isFinite(deadlineMs) || deadlineMs <= Date.now()) {
+          throw new Error("Every milestone deadline must be in the future.");
+        }
+
+        return BigInt(Math.floor(deadlineMs / 1000));
+      });
       const totalWei = amounts.reduce(
-  (total, amount) => total + amount,
-  BigInt(0)
-);
+        (total, amount) => total + amount,
+        BigInt(0),
+      );
 
       await getProvider();
 
       setMessage(
-        "Please confirm the project creation and ETH funding in MetaMask..."
+        "Please confirm the project creation and ETH funding in MetaMask...",
       );
 
       const contract = await getEscrowContract();
@@ -237,7 +226,8 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
         freelancer,
         descriptions,
         amounts,
-        { value: totalWei }
+        deadlines,
+        { value: totalWei },
       );
 
       setMessage(`Transaction submitted: ${tx.hash}`);
@@ -266,11 +256,11 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
       setMessage(
         `Project created and funded successfully!${
           projectId ? ` Project ID: ${projectId}.` : ""
-        } Transaction: ${tx.hash}`
+        } Transaction: ${tx.hash}`,
       );
 
       setFreelancer("");
-      setMilestones([{ description: "", amount: "" }]);
+      setMilestones([{ description: "", amount: "", deadline: "" }]);
     } catch (error: unknown) {
       console.error("Project creation failed:", error);
 
@@ -288,7 +278,7 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
           err.shortMessage ||
             err.reason ||
             err.message ||
-            "Could not create the project."
+            "Could not create the project.",
         );
       }
     } finally {
@@ -302,9 +292,7 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
     const handleAccountsChanged = (accounts: string[]) => {
       setAccount(accounts[0] || "");
       setMessage(
-        accounts.length
-          ? "Wallet account changed."
-          : "Wallet disconnected."
+        accounts.length ? "Wallet account changed." : "Wallet disconnected.",
       );
     };
 
@@ -316,14 +304,8 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
     window.ethereum.on("chainChanged", handleChainChanged);
 
     return () => {
-      window.ethereum?.removeListener(
-        "accountsChanged",
-        handleAccountsChanged
-      );
-      window.ethereum?.removeListener(
-        "chainChanged",
-        handleChainChanged
-      );
+      window.ethereum?.removeListener("accountsChanged", handleAccountsChanged);
+      window.ethereum?.removeListener("chainChanged", handleChainChanged);
     };
   }, []);
 
@@ -376,13 +358,11 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
         </section>
 
         <section className="mt-8 rounded-xl bg-white p-6 shadow">
-          <h2 className="text-xl font-semibold">
-            Create Freelance Project
-          </h2>
+          <h2 className="text-xl font-semibold">Create Freelance Project</h2>
 
           <p className="mt-2 text-sm text-slate-600">
-            The client deposits the full milestone budget when
-            creating the project.
+            The client deposits the full milestone budget when creating the
+            project.
           </p>
 
           <label className="mt-5 block text-sm font-medium">
@@ -403,9 +383,7 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
               className="mt-4 rounded-lg border border-slate-200 p-4"
             >
               <div className="flex items-center justify-between">
-                <h4 className="font-medium">
-                  Milestone {index + 1}
-                </h4>
+                <h4 className="font-medium">Milestone {index + 1}</h4>
 
                 {milestones.length > 1 && (
                   <button
@@ -418,25 +396,17 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
                 )}
               </div>
 
-              <label className="mt-3 block text-sm">
-                Description
-              </label>
+              <label className="mt-3 block text-sm">Description</label>
               <input
                 value={milestone.description}
                 onChange={(e) =>
-                  updateMilestone(
-                    index,
-                    "description",
-                    e.target.value
-                  )
+                  updateMilestone(index, "description", e.target.value)
                 }
                 placeholder="e.g. Complete homepage design"
                 className="mt-1 w-full rounded-lg border border-slate-300 p-3"
               />
 
-              <label className="mt-3 block text-sm">
-                Amount (ETH)
-              </label>
+              <label className="mt-3 block text-sm">Amount (ETH)</label>
               <input
                 type="number"
                 min="0"
@@ -445,7 +415,20 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
                 onChange={(e) =>
                   updateMilestone(index, "amount", e.target.value)
                 }
-                placeholder="0.01"
+                placeholder="e.g. 0.05"
+                required
+                className="mt-1 w-full rounded-lg border border-slate-300 p-3"
+              />
+
+              <label className="mt-3 block text-sm">Deadline</label>
+              <input
+                type="datetime-local"
+                value={milestone.deadline}
+                min={new Date(Date.now() + 60_000).toISOString().slice(0, 16)}
+                onChange={(e) =>
+                  updateMilestone(index, "deadline", e.target.value)
+                }
+                required
                 className="mt-1 w-full rounded-lg border border-slate-300 p-3"
               />
             </div>
@@ -461,12 +444,8 @@ if (amount <= BigInt(0)) {            throw new Error("Amount must be positive."
           </button>
 
           <div className="mt-5 rounded-lg bg-slate-100 p-4">
-            <p className="text-sm text-slate-600">
-              Total amount to deposit
-            </p>
-            <p className="mt-1 text-2xl font-bold">
-              {totalEth.toFixed(6)} ETH
-            </p>
+            <p className="text-sm text-slate-600">Total amount to deposit</p>
+            <p className="mt-1 text-2xl font-bold">{totalEth.toFixed(6)} ETH</p>
           </div>
 
           <button
