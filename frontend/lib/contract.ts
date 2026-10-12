@@ -19,7 +19,7 @@ export async function getEscrowContract(): Promise<Contract> {
   const signer: Signer = await provider.getSigner();
 
   const network = await provider.getNetwork();
-  
+
   if (network.chainId !== BigInt("11155111")) {
     throw new Error("Please switch MetaMask to the Sepolia test network.");
   }

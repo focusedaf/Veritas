@@ -195,7 +195,7 @@ export default function Home() {
           );
         }
       });
-      
+
       const deadlines = milestones.map((milestone) => {
         if (!milestone.deadline) {
           throw new Error("Please set a deadline for every milestone.");
