@@ -16,7 +16,26 @@ type MilestoneInput = {
   deadline: string;
 };
 
-type WalletRole = "client" | "freelancer" | "arbitrator" | "unknown";
+type WalletProject = {
+  id: string;
+  client: string;
+  freelancer: string;
+  role: "client" | "freelancer" | "arbitrator";
+};
+
+type MilestoneDetails = {
+  index: number;
+  description: string;
+  submissionURI: string;
+  amountWei: string;
+  amountETH: string;
+  deadline: string;
+  submittedAt: string;
+  disputedAt: string;
+  revisionCount: number;
+  statusCode: number;
+  status: string;
+};
 
 const SEPOLIA_CHAIN_ID = BigInt(11155111);
 const SEPOLIA_HEX = "0xaa36a7";
@@ -62,17 +81,34 @@ function getMilestoneStatusLabel(status: unknown): string {
     : "Unknown";
 }
 
+function formatDate(timestamp: string): string {
+  const seconds = Number(timestamp);
+
+  if (!seconds) return "Not available";
+
+  return new Date(seconds * 1000).toLocaleString();
+}
+
 export default function Home() {
   const [account, setAccount] = useState("");
   const [network, setNetwork] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [walletRole, setWalletRole] = useState<WalletRole>("unknown");
 
   const [freelancer, setFreelancer] = useState("");
   const [milestones, setMilestones] = useState<MilestoneInput[]>([
     { description: "", amount: "", deadline: "" },
   ]);
+  const [disputeReason, setDisputeReason] = useState("");
+  const [freelancerAward, setFreelancerAward] = useState("");
+  const [walletProjects, setWalletProjects] = useState<WalletProject[]>([]);
+  const [projectsLoading, setProjectsLoading] = useState(false);
+  const [projectMilestones, setProjectMilestones] = useState<
+    Record<string, MilestoneDetails[]>
+  >({});
+  const [expandedProjects, setExpandedProjects] = useState<
+    Record<string, boolean>
+  >({});
 
   const [projectId, setProjectId] = useState("");
   const [milestoneIndex, setMilestoneIndex] = useState("0");
@@ -107,6 +143,216 @@ export default function Home() {
     return provider;
   }, []);
 
+  const loadWalletProjects = useCallback(
+    async (walletAddress: string) => {
+      if (!walletAddress || !isAddress(walletAddress)) {
+        setWalletProjects([]);
+        setProjectMilestones({});
+        setProjectsLoading(false);
+        return;
+      }
+
+      setProjectsLoading(true);
+      setMessage("Connecting to Sepolia and loading your projects...");
+
+      try {
+        const provider = await getProvider();
+        const contract = await getEscrowContract();
+
+        const [arbitratorAddress, latestBlock] = await Promise.all([
+          contract.arbitrator(),
+          provider.getBlockNumber(),
+        ]);
+
+        const connectedAddress = walletAddress.toLowerCase();
+        const arbitrator = String(arbitratorAddress).toLowerCase();
+
+        // Project #6 has known activity around block 11,904,000.
+        // Start earlier than that activity to avoid scanning all of Sepolia.
+        // Lower this value if your contract has older projects.
+        const START_BLOCK = 11_800_000;
+        const CHUNK_SIZE = 2_000;
+
+        if (latestBlock < START_BLOCK) {
+          throw new Error(
+            `Latest block ${latestBlock} is below START_BLOCK ${START_BLOCK}.`,
+          );
+        }
+
+        const allEvents: Awaited<ReturnType<typeof contract.queryFilter>> = [];
+
+        for (
+          let fromBlock = START_BLOCK;
+          fromBlock <= latestBlock;
+          fromBlock += CHUNK_SIZE
+        ) {
+          const toBlock = Math.min(fromBlock + CHUNK_SIZE - 1, latestBlock);
+
+          setMessage(
+            `Loading project events from Sepolia: blocks ${fromBlock.toLocaleString()}–${toBlock.toLocaleString()} of ${latestBlock.toLocaleString()}...`,
+          );
+
+          const events = await contract.queryFilter(
+            contract.filters.ProjectCreated(),
+            fromBlock,
+            toBlock,
+          );
+
+          allEvents.push(...events);
+        }
+
+        const projectIds = [
+          ...new Set(
+            allEvents
+              .map((event) => {
+                if ("args" in event && event.args?.projectId != null) {
+                  return event.args.projectId.toString();
+                }
+                return null;
+              })
+              .filter((id): id is string => id !== null),
+          ),
+        ];
+
+        setMessage(
+          `Found ${projectIds.length} project creation event(s). Checking wallet access...`,
+        );
+
+        const discoveredProjects = await Promise.all(
+          projectIds.map(async (id): Promise<WalletProject | null> => {
+            const project = await contract.projects(BigInt(id));
+
+            const client = String(project.client ?? project[0]);
+            const assignedFreelancer = String(project.freelancer ?? project[1]);
+
+            let role: WalletProject["role"] | null = null;
+
+            if (connectedAddress === arbitrator) {
+              role = "arbitrator";
+            } else if (connectedAddress === client.toLowerCase()) {
+              role = "client";
+            } else if (connectedAddress === assignedFreelancer.toLowerCase()) {
+              role = "freelancer";
+            }
+
+            if (!role) return null;
+
+            return {
+              id,
+              client,
+              freelancer: assignedFreelancer,
+              role,
+            };
+          }),
+        );
+
+        const matchingProjects = discoveredProjects
+          .filter((project): project is WalletProject => project !== null)
+          .sort((a, b) => {
+            const idA = BigInt(a.id);
+            const idB = BigInt(b.id);
+            return idA < idB ? 1 : idA > idB ? -1 : 0;
+          });
+
+        setWalletProjects(matchingProjects);
+
+        if (matchingProjects.length === 0) {
+          setProjectMilestones({});
+          setMessage(
+            `No projects were found for ${walletAddress} in the scanned block range ${START_BLOCK.toLocaleString()}–${latestBlock.toLocaleString()}. If older projects exist, lower START_BLOCK in page.tsx.`,
+          );
+          return;
+        }
+
+        setMessage(
+          `Found ${matchingProjects.length} project(s). Loading their milestones...`,
+        );
+
+        const milestoneEntries = await Promise.all(
+          matchingProjects.map(async (project) => {
+            const details: MilestoneDetails[] = [];
+
+            for (let index = 0; index < 20; index++) {
+              try {
+                const result = await contract.getMilestone(
+                  BigInt(project.id),
+                  BigInt(index),
+                );
+
+                const amount = result.amount ?? result[2];
+
+                details.push({
+                  index,
+                  description: String(result.description ?? result[0]),
+                  submissionURI: String(result.submissionURI ?? result[1]),
+                  amountWei: amount.toString(),
+                  amountETH: (Number(amount) / 1e18).toFixed(6),
+                  deadline: (result.deadline ?? result[3]).toString(),
+                  submittedAt: (result.submittedAt ?? result[4]).toString(),
+                  disputedAt: (result.disputedAt ?? result[5]).toString(),
+                  revisionCount: Number(result.revisionCount ?? result[6]),
+                  statusCode: Number(result.status ?? result[7]),
+                  status: getMilestoneStatusLabel(result.status ?? result[7]),
+                });
+              } catch {
+                // Stop at the first milestone index that does not exist.
+                break;
+              }
+            }
+
+            return [project.id, details] as const;
+          }),
+        );
+
+        const allMilestones = Object.fromEntries(milestoneEntries);
+
+        if (connectedAddress === arbitrator) {
+          const disputedEntries = Object.entries(allMilestones)
+            .map(
+              ([id, details]) =>
+                [
+                  id,
+                  details.filter((milestone) => milestone.statusCode === 2),
+                ] as const,
+            )
+            .filter(([, details]) => details.length > 0);
+
+          const disputedIds = new Set(disputedEntries.map(([id]) => id));
+
+          const disputedProjects = matchingProjects.filter((project) =>
+            disputedIds.has(project.id),
+          );
+
+          setWalletProjects(disputedProjects);
+          setProjectMilestones(Object.fromEntries(disputedEntries));
+
+          setMessage(
+            disputedProjects.length > 0
+              ? `Found ${disputedProjects.length} project(s) with disputed milestones.`
+              : "No disputed milestones require arbitration right now.",
+          );
+        } else {
+          setWalletProjects(matchingProjects);
+          setProjectMilestones(allMilestones);
+          setMessage(
+            `Loaded ${matchingProjects.length} project(s) and their milestones for ${walletAddress}.`,
+          );
+        }
+        setMessage(
+          `Loaded ${matchingProjects.length} project(s) and their milestones for ${walletAddress}.`,
+        );
+      } catch (error) {
+        console.error("Failed to load wallet projects:", error);
+        setMessage(
+          `Could not load projects: ${errorMessage(error)}. Check the Sepolia RPC connection and START_BLOCK.`,
+        );
+      } finally {
+        setProjectsLoading(false);
+      }
+    },
+    [getProvider],
+  );
+
   const connectWallet = useCallback(async () => {
     try {
       if (!window.ethereum) {
@@ -122,122 +368,25 @@ export default function Home() {
 
       setAccount(address);
       setNetwork(`${networkInfo.name} (Chain ID: ${networkInfo.chainId})`);
-      setWalletRole("unknown");
-      setMessage(
-        `Connected wallet: ${address}. Role detection will run automatically when a valid project ID is entered.`,
-      );
+      setMessage(`Wallet connected: ${address}. Loading your projects...`);
+
+      const balanceContract = await getEscrowContract();
+      const balance = await balanceContract.pendingWithdrawals(address);
+      setWithdrawableBalance((Number(balance) / 1e18).toFixed(6));
     } catch (error) {
       setMessage(errorMessage(error));
     }
   }, []);
 
-  async function detectWalletRole() {
-    if (!/^\d+$/.test(projectId)) {
-      setWalletRole("unknown");
-      setMessage("Enter a valid project ID first.");
+  useEffect(() => {
+    if (!account) {
+      setWalletProjects([]);
+      setProjectMilestones({});
       return;
     }
 
-    setLoading(true);
-
-    try {
-      const provider = await getProvider();
-      const signer = await provider.getSigner();
-      const connectedAccount = await signer.getAddress();
-      const networkInfo = await provider.getNetwork();
-
-      setAccount(connectedAccount);
-      setNetwork(`${networkInfo.name} (Chain ID: ${networkInfo.chainId})`);
-
-      const contract = await getEscrowContract();
-
-      const [project, arbitrator] = await Promise.all([
-        contract.projects(BigInt(projectId)),
-        contract.arbitrator(),
-      ]);
-
-      const client = String(project.client ?? project[0]).toLowerCase();
-      const assignedFreelancer = String(
-        project.freelancer ?? project[1],
-      ).toLowerCase();
-      const currentAccount = connectedAccount.toLowerCase();
-
-      let role: WalletRole = "unknown";
-
-      if (currentAccount === client) {
-        role = "client";
-      } else if (currentAccount === assignedFreelancer) {
-        role = "freelancer";
-      } else if (currentAccount === String(arbitrator).toLowerCase()) {
-        role = "arbitrator";
-      }
-
-      setWalletRole(role);
-      setMessage(`Connected wallet role for project ${projectId}: ${role}.`);
-    } catch (error) {
-      setWalletRole("unknown");
-      setMessage(errorMessage(error));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  // Automatically detect the wallet role when the account or project changes.
-  useEffect(() => {
-    let cancelled = false;
-
-    async function detectRoleAutomatically() {
-      if (!account || !/^\d+$/.test(projectId)) {
-        setWalletRole("unknown");
-        return;
-      }
-
-      try {
-        const provider = await getProvider();
-        const signer = await provider.getSigner();
-        const connectedAccount = (await signer.getAddress()).toLowerCase();
-
-        if (connectedAccount !== account.toLowerCase()) {
-          if (!cancelled) setWalletRole("unknown");
-          return;
-        }
-
-        const contract = await getEscrowContract();
-
-        const [project, arbitrator] = await Promise.all([
-          contract.projects(BigInt(projectId)),
-          contract.arbitrator(),
-        ]);
-
-        if (cancelled) return;
-
-        const client = String(project.client ?? project[0]).toLowerCase();
-        const assignedFreelancer = String(
-          project.freelancer ?? project[1],
-        ).toLowerCase();
-
-        let role: WalletRole = "unknown";
-
-        if (connectedAccount === client) {
-          role = "client";
-        } else if (connectedAccount === assignedFreelancer) {
-          role = "freelancer";
-        } else if (connectedAccount === String(arbitrator).toLowerCase()) {
-          role = "arbitrator";
-        }
-
-        setWalletRole(role);
-      } catch {
-        if (!cancelled) setWalletRole("unknown");
-      }
-    }
-
-    void detectRoleAutomatically();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [account, projectId, getProvider]);
+    void loadWalletProjects(account);
+  }, [account, loadWalletProjects]);
 
   async function switchToSepolia() {
     try {
@@ -344,6 +493,8 @@ export default function Home() {
       setMilestoneDetails(JSON.stringify(details, null, 2));
     }
 
+    await loadWalletProjects(signerAddress);
+
     return contract;
   }
 
@@ -402,17 +553,18 @@ export default function Home() {
 
       try {
         await refreshOnChainData();
-        setMessage(`${result}\nMilestone and wallet balance refreshed.`);
+        setMessage(
+          `${result}\nProject, milestone and wallet balance refreshed.`,
+        );
       } catch (refreshError) {
         setMessage(
-          `${result}\nTransaction confirmed, but automatic refresh failed: ${errorMessage(refreshError)}. Click Read On-Chain State or Refresh Balance.`,
+          `${result}\nTransaction confirmed, but automatic refresh failed: ${errorMessage(refreshError)}. Use the refresh buttons to reload on-chain data.`,
         );
       }
     } catch (error) {
       console.error("Contract transaction failed:", error);
       setMessage(errorMessage(error));
 
-      // ethers can throw from tx.wait() when a mined transaction reverts.
       const txError = error as {
         receipt?: { status?: number; hash?: string };
         transaction?: { hash?: string };
@@ -581,7 +733,10 @@ export default function Home() {
 
         if (newProjectId !== null) {
           setProjectId(newProjectId);
-          setWalletRole("client");
+
+          // Immediately reload the project list after creation.
+          const signer = await (await getProvider()).getSigner();
+          await loadWalletProjects(await signer.getAddress());
 
           return `Project created and funded successfully!\nProject ID: ${newProjectId}\nTransaction: https://sepolia.etherscan.io/tx/${hash}`;
         }
@@ -680,13 +835,6 @@ export default function Home() {
   }
 
   async function submitWork() {
-    if (walletRole !== "freelancer") {
-      setMessage(
-        "Connect the assigned freelancer wallet and wait for automatic role detection.",
-      );
-      return;
-    }
-
     await sendTransaction(
       async () => {
         await getProvider();
@@ -718,13 +866,6 @@ export default function Home() {
   }
 
   async function approveMilestone() {
-    if (walletRole !== "client") {
-      setMessage(
-        "Connect the project's client wallet and wait for automatic role detection.",
-      );
-      return;
-    }
-
     await sendTransaction(
       async () => {
         await getProvider();
@@ -751,13 +892,6 @@ export default function Home() {
   }
 
   async function requestRevision() {
-    if (walletRole !== "client") {
-      setMessage(
-        "Connect the project's client wallet and wait for automatic role detection.",
-      );
-      return;
-    }
-
     await sendTransaction(
       async () => {
         await getProvider();
@@ -788,16 +922,114 @@ export default function Home() {
     );
   }
 
+  async function raiseDispute() {
+    await sendTransaction(
+      async () => {
+        await getProvider();
+
+        if (!/^\d+$/.test(projectId) || !/^\d+$/.test(milestoneIndex)) {
+          throw new Error("Enter valid project and milestone IDs.");
+        }
+
+        const contract = await getEscrowContract();
+
+        const result = await contract.getMilestone(
+          BigInt(projectId),
+          BigInt(milestoneIndex),
+        );
+
+        const status = Number(result.status ?? result[7]);
+
+        if (status !== 1) {
+          throw new Error("Only a submitted milestone can be disputed.");
+        }
+
+        return (await contract.raiseDispute(
+          BigInt(projectId),
+          BigInt(milestoneIndex),
+        )) as TransactionResponse;
+      },
+      (receipt, hash) =>
+        `Dispute raised successfully in block ${receipt.blockNumber}. https://sepolia.etherscan.io/tx/${hash}`,
+    );
+  }
+
+  async function resolveDispute() {
+    await sendTransaction(
+      async () => {
+        await getProvider();
+
+        if (!/^\d+$/.test(projectId) || !/^\d+$/.test(milestoneIndex)) {
+          throw new Error("Enter valid project and milestone IDs.");
+        }
+
+        if (!freelancerAward.trim()) {
+          throw new Error("Enter the freelancer's award in ETH.");
+        }
+
+        let awardWei: bigint;
+
+        try {
+          awardWei = parseEther(freelancerAward.trim());
+        } catch {
+          throw new Error("Enter a valid ETH amount.");
+        }
+
+        const contract = await getEscrowContract();
+        const signer = await (await getProvider()).getSigner();
+        const signerAddress = (await signer.getAddress()).toLowerCase();
+        const arbitrator = String(await contract.arbitrator()).toLowerCase();
+
+        if (signerAddress !== arbitrator) {
+          throw new Error(
+            "Connect the designated arbitrator wallet to resolve disputes.",
+          );
+        }
+
+        const result = await contract.getMilestone(
+          BigInt(projectId),
+          BigInt(milestoneIndex),
+        );
+
+        const amount = BigInt(result.amount ?? result[2]);
+        const status = Number(result.status ?? result[7]);
+
+        if (status !== 2) {
+          throw new Error("This milestone is not currently disputed.");
+        }
+
+        if (awardWei > amount) {
+          throw new Error(
+            "The freelancer's award cannot exceed the milestone amount.",
+          );
+        }
+
+        return (await contract.resolveDispute(
+          BigInt(projectId),
+          BigInt(milestoneIndex),
+          awardWei,
+        )) as TransactionResponse;
+      },
+      (receipt, hash) =>
+        `Dispute resolution confirmed in block ${receipt.blockNumber}. https://sepolia.etherscan.io/tx/${hash}`,
+    );
+  }
+
   useEffect(() => {
     if (!window.ethereum) return;
 
     const handleAccountsChanged = (accounts: string[]) => {
-      setAccount(accounts[0] || "");
-      setWalletRole("unknown");
+      const nextAccount = accounts[0] || "";
+      setAccount(nextAccount);
       setWithdrawableBalance("0");
+      setProjectId("");
+      setMilestoneDetails("");
+      setProjectMilestones({});
+      setWalletProjects([]);
+
       setMessage(
-        accounts.length
-          ? `Account changed to ${accounts[0]}. Detecting role for project ${projectId || "(enter a project ID)"}...`
+        nextAccount
+          ? `Account changed to ${nextAccount}. Loading projects...`
           : "Wallet disconnected.",
       );
     };
@@ -811,7 +1043,7 @@ export default function Home() {
       window.ethereum?.removeListener("accountsChanged", handleAccountsChanged);
       window.ethereum?.removeListener("chainChanged", handleChainChanged);
     };
-  }, [projectId]);
+  }, []);
 
   return (
     <main className="min-h-screen bg-slate-100 p-6 text-slate-900 md:p-8">
@@ -846,24 +1078,12 @@ export default function Home() {
             >
               Test Escrow Contract
             </button>
-
-            <button
-              type="button"
-              onClick={detectWalletRole}
-              disabled={loading || !account || !/^\d+$/.test(projectId)}
-              className="rounded-lg bg-indigo-600 px-5 py-3 text-white disabled:opacity-50"
-            >
-              Detect My Role
-            </button>
           </div>
 
           {account && (
             <div className="mt-4 space-y-2 text-sm">
               <p className="break-all">Connected signer: {account}</p>
               <p>Network: {network}</p>
-              <p>
-                Current role: <strong>{walletRole}</strong>
-              </p>
             </div>
           )}
 
@@ -878,6 +1098,195 @@ export default function Home() {
             >
               {message}
             </p>
+          )}
+        </section>
+
+        <section className="mt-8 rounded-xl bg-white p-6 shadow">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold">Your Projects</h2>
+              <p className="mt-2 text-sm text-slate-600">
+                Project information is loaded from Sepolia using your connected
+                wallet address.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                if (account) void loadWalletProjects(account);
+              }}
+              disabled={!account || projectsLoading}
+              className="rounded-lg border border-slate-300 px-4 py-2 disabled:opacity-50"
+            >
+              {projectsLoading ? "Loading..." : "Refresh Projects"}
+            </button>
+          </div>
+
+          {!account ? (
+            <p className="mt-4 text-sm text-slate-500">
+              Connect MetaMask to load your projects.
+            </p>
+          ) : projectsLoading ? (
+            <p className="mt-4 text-sm text-slate-500">
+              Reading projects and milestones from Sepolia...
+            </p>
+          ) : walletProjects.length === 0 ? (
+            <p className="mt-4 text-sm text-slate-500">
+              No associated projects found. You can create a project below or
+              enter an existing project ID in Project and Milestone Status.
+            </p>
+          ) : (
+            <div className="mt-5 space-y-4">
+              {walletProjects.map((project) => {
+                const details = projectMilestones[project.id] ?? [];
+                const expanded = !!expandedProjects[project.id];
+
+                return (
+                  <article
+                    key={project.id}
+                    className="rounded-lg border border-slate-200 p-4"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-lg font-semibold">
+                        Project #{project.id}
+                      </h3>
+
+                      <span className="rounded-full bg-blue-50 px-3 py-1 text-sm capitalize text-blue-700">
+                        {project.role}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 space-y-2 text-sm">
+                      <p className="break-all">
+                        <strong>Client:</strong> {project.client}
+                      </p>
+                      <p className="break-all">
+                        <strong>Freelancer:</strong> {project.freelancer}
+                      </p>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setProjectId(project.id);
+                          setMilestoneIndex("0");
+                          setExpandedProjects((current) => ({
+                            ...current,
+                            [project.id]: !current[project.id],
+                          }));
+                          setMessage(`Selected project ${project.id}.`);
+                        }}
+                        className="rounded-lg bg-slate-800 px-4 py-2 text-white"
+                      >
+                        {expanded ? "Hide Milestones" : "View Milestones"}
+                      </button>
+                    </div>
+
+                    {expanded && (
+                      <div className="mt-4 space-y-3">
+                        {details.length === 0 ? (
+                          <p className="text-sm text-slate-500">
+                            No milestones could be loaded for this project.
+                          </p>
+                        ) : (
+                          details.map((milestone) => (
+                            <div
+                              key={milestone.index}
+                              className="rounded-lg bg-slate-50 p-4"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <h4 className="font-semibold">
+                                  Milestone {milestone.index + 1}
+                                </h4>
+                                <span className="rounded-full bg-white px-3 py-1 text-sm">
+                                  {milestone.status}
+                                </span>
+                              </div>
+
+                              <p className="mt-2 wrap-break-word text-sm">
+                                <strong>Description:</strong>{" "}
+                                {milestone.description || "No description"}
+                              </p>
+
+                              <p className="mt-2 text-sm">
+                                <strong>Amount:</strong> {milestone.amountETH}{" "}
+                                ETH
+                              </p>
+
+                              <p className="mt-2 text-sm">
+                                <strong>Deadline:</strong>{" "}
+                                {formatDate(milestone.deadline)}
+                              </p>
+
+                              <p className="mt-2 text-sm">
+                                <strong>Submitted:</strong>{" "}
+                                {formatDate(milestone.submittedAt)}
+                              </p>
+
+                              <p className="mt-2 text-sm">
+                                <strong>Revision count:</strong>{" "}
+                                {milestone.revisionCount}
+                              </p>
+
+                              {milestone.submissionURI && (
+                                <p className="mt-2 break-all text-sm">
+                                  <strong>Submission:</strong>{" "}
+                                  {milestone.submissionURI}
+                                </p>
+                              )}
+
+                              {milestone.disputedAt !== "0" && (
+                                <p className="mt-2 text-sm">
+                                  <strong>Disputed at:</strong>{" "}
+                                  {formatDate(milestone.disputedAt)}
+                                </p>
+                              )}
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setProjectId(project.id);
+                                  setMilestoneIndex(String(milestone.index));
+                                  setMilestoneDetails(
+                                    JSON.stringify(milestone, null, 2),
+                                  );
+                                  setMessage(
+                                    `Selected milestone ${milestone.index} in project ${project.id}.`,
+                                  );
+                                }}
+                                className="mt-3 rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                              >
+                                Select Milestone
+                              </button>
+                              {project.role !== "arbitrator" &&
+                                milestone.statusCode === 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setProjectId(project.id);
+                                      setMilestoneIndex(
+                                        String(milestone.index),
+                                      );
+                                      setMessage(
+                                        `Selected submitted milestone ${milestone.index} in project ${project.id}.`,
+                                      );
+                                    }}
+                                    className="mt-3 ml-2 rounded-lg bg-red-600 px-3 py-2 text-sm text-white"
+                                  >
+                                    Select for Dispute
+                                  </button>
+                                )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </article>
+                );
+              })}
+            </div>
           )}
         </section>
 
@@ -1066,7 +1475,7 @@ export default function Home() {
           <button
             type="button"
             onClick={createProject}
-            disabled={loading}
+            disabled={loading || !account}
             className="mt-5 w-full rounded-lg bg-blue-600 px-5 py-3 font-medium text-white disabled:opacity-50"
           >
             {loading
@@ -1085,10 +1494,7 @@ export default function Home() {
               <label className="block text-sm font-medium">Project ID</label>
               <input
                 value={projectId}
-                onChange={(event) => {
-                  setProjectId(event.target.value);
-                  setWalletRole("unknown");
-                }}
+                onChange={(event) => setProjectId(event.target.value)}
                 inputMode="numeric"
                 className="mt-1 w-full rounded-lg border border-slate-300 p-3"
               />
@@ -1122,11 +1528,12 @@ export default function Home() {
           )}
         </section>
 
-        {walletRole === "freelancer" && (
+        {account && (
           <section className="mt-8 rounded-xl bg-white p-6 shadow">
-            <h2 className="text-xl font-semibold">Freelancer: Submit Work</h2>
+            <h2 className="text-xl font-semibold">Submit Work</h2>
             <p className="mt-2 text-sm text-slate-600">
-              Submit work for the milestone assigned to your wallet.
+              The connected wallet must be the assigned freelancer for the
+              selected project. The contract enforces this permission.
             </p>
 
             <label className="mt-4 block text-sm font-medium">
@@ -1149,11 +1556,12 @@ export default function Home() {
           </section>
         )}
 
-        {walletRole === "client" && (
+        {account && (
           <section className="mt-8 rounded-xl bg-white p-6 shadow">
-            <h2 className="text-xl font-semibold">Client: Review Milestone</h2>
+            <h2 className="text-xl font-semibold">Review Milestone</h2>
             <p className="mt-2 text-sm text-slate-600">
-              Review submitted work, approve it, or request a revision.
+              The connected wallet must be the project's client to approve work
+              or request a revision. The contract enforces these permissions.
             </p>
 
             <label className="mt-4 block text-sm font-medium">
@@ -1187,13 +1595,62 @@ export default function Home() {
           </section>
         )}
 
-        {walletRole === "arbitrator" && (
-          <section className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-6">
-            <h2 className="text-xl font-semibold">Arbitrator Wallet</h2>
-            <p className="mt-2 text-sm">
-              The connected account is the contract arbitrator. Client and
-              freelancer actions are hidden.
+        {account && (
+          <section className="mt-8 rounded-xl bg-white p-6 shadow">
+            <h2 className="text-xl font-semibold">Dispute Resolution</h2>
+
+            <p className="mt-2 text-sm text-slate-600">
+              Select a project and milestone above before performing a dispute
+              action. The smart contract enforces permissions and deadlines.
             </p>
+
+            <div className="mt-4">
+              <p className="text-sm font-medium">Raise a dispute</p>
+              <p className="mt-1 text-sm text-slate-500">
+                Available to the client or freelancer for an eligible submitted
+                milestone.
+              </p>
+
+              <button
+                type="button"
+                onClick={raiseDispute}
+                disabled={loading}
+                className="mt-3 rounded-lg bg-red-600 px-5 py-3 text-white disabled:opacity-50"
+              >
+                {loading ? "Processing..." : "Raise Dispute"}
+              </button>
+            </div>
+
+            <div className="mt-6 border-t border-slate-200 pt-5">
+              <p className="font-medium">Resolve a dispute (arbitrator only)</p>
+              <p className="mt-1 text-sm text-slate-500">
+                Enter the amount awarded to the freelancer. The remainder is
+                allocated to the client.
+              </p>
+
+              <label className="mt-4 block text-sm font-medium">
+                Freelancer award (ETH)
+              </label>
+
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={freelancerAward}
+                onChange={(event) => setFreelancerAward(event.target.value)}
+                placeholder="0.005"
+                className="mt-2 w-full rounded-lg border border-slate-300 p-3"
+              />
+
+              <button
+                type="button"
+                onClick={resolveDispute}
+                disabled={loading}
+                className="mt-3 rounded-lg bg-purple-700 px-5 py-3 text-white disabled:opacity-50"
+              >
+                {loading ? "Processing..." : "Resolve Dispute"}
+              </button>
+            </div>
           </section>
         )}
       </div>
