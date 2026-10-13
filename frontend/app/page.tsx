@@ -1,7 +1,7 @@
 "use client";
 
+import React, { useCallback, useEffect, useState } from "react";
 import { getEscrowContract, CONTRACT_ADDRESS } from "@/lib/contract";
-import { useCallback, useEffect, useState } from "react";
 import {
   BrowserProvider,
   isAddress,
@@ -15,6 +15,8 @@ type MilestoneInput = {
   amount: string;
   deadline: string;
 };
+
+type WalletRole = "client" | "freelancer" | "arbitrator" | "unknown";
 
 const SEPOLIA_CHAIN_ID = BigInt(11155111);
 const SEPOLIA_HEX = "0xaa36a7";
@@ -40,19 +42,38 @@ function errorMessage(error: unknown): string {
   );
 }
 
+const MILESTONE_STATUSES = [
+  "Funded",
+  "Submitted",
+  "Disputed",
+  "Paid",
+  "Refunded",
+  "Revision Requested",
+  "Split",
+] as const;
+
+function getMilestoneStatusLabel(status: unknown): string {
+  const index = Number(status);
+
+  return Number.isInteger(index) &&
+    index >= 0 &&
+    index < MILESTONE_STATUSES.length
+    ? MILESTONE_STATUSES[index]
+    : "Unknown";
+}
+
 export default function Home() {
   const [account, setAccount] = useState("");
   const [network, setNetwork] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-  const [walletRole, setWalletRole] = useState<
-    "client" | "freelancer" | "arbitrator" | "unknown"
-  >("unknown");
+  const [walletRole, setWalletRole] = useState<WalletRole>("unknown");
+
   const [freelancer, setFreelancer] = useState("");
   const [milestones, setMilestones] = useState<MilestoneInput[]>([
     { description: "", amount: "", deadline: "" },
   ]);
-  
+
   const [projectId, setProjectId] = useState("");
   const [milestoneIndex, setMilestoneIndex] = useState("0");
   const [workSubmission, setWorkSubmission] = useState("");
@@ -86,53 +107,6 @@ export default function Home() {
     return provider;
   }, []);
 
-  async function detectWalletRole() {
-    if (!account) {
-      setWalletRole("unknown");
-      setMessage("Connect MetaMask first.");
-      return;
-    }
-
-    if (!/^\d+$/.test(projectId)) {
-      setWalletRole("unknown");
-      setMessage("Enter a valid project ID first.");
-      return;
-    }
-
-    setLoading(true);
-
-    try {
-      await getProvider();
-
-      const contract = await getEscrowContract();
-      const [project, arbitrator] = await Promise.all([
-        contract.projects(BigInt(projectId)),
-        contract.arbitrator(),
-      ]);
-
-      const client = String(project.client ?? project[0]);
-      const freelancerAddress = String(project.freelancer ?? project[1]);
-
-      let role: "client" | "freelancer" | "arbitrator" | "unknown" = "unknown";
-
-      if (account.toLowerCase() === client.toLowerCase()) {
-        role = "client";
-      } else if (account.toLowerCase() === freelancerAddress.toLowerCase()) {
-        role = "freelancer";
-      } else if (account.toLowerCase() === String(arbitrator).toLowerCase()) {
-        role = "arbitrator";
-      }
-
-      setWalletRole(role);
-      setMessage(`Connected wallet role for project ${projectId}: ${role}.`);
-    } catch (error) {
-      setWalletRole("unknown");
-      setMessage(errorMessage(error));
-    } finally {
-      setLoading(false);
-    }
-  }
-
   const connectWallet = useCallback(async () => {
     try {
       if (!window.ethereum) {
@@ -148,11 +122,122 @@ export default function Home() {
 
       setAccount(address);
       setNetwork(`${networkInfo.name} (Chain ID: ${networkInfo.chainId})`);
-      setMessage(`Connected wallet: ${address}`);
+      setWalletRole("unknown");
+      setMessage(
+        `Connected wallet: ${address}. Role detection will run automatically when a valid project ID is entered.`,
+      );
     } catch (error) {
       setMessage(errorMessage(error));
     }
   }, []);
+
+  async function detectWalletRole() {
+    if (!/^\d+$/.test(projectId)) {
+      setWalletRole("unknown");
+      setMessage("Enter a valid project ID first.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      const provider = await getProvider();
+      const signer = await provider.getSigner();
+      const connectedAccount = await signer.getAddress();
+      const networkInfo = await provider.getNetwork();
+
+      setAccount(connectedAccount);
+      setNetwork(`${networkInfo.name} (Chain ID: ${networkInfo.chainId})`);
+
+      const contract = await getEscrowContract();
+
+      const [project, arbitrator] = await Promise.all([
+        contract.projects(BigInt(projectId)),
+        contract.arbitrator(),
+      ]);
+
+      const client = String(project.client ?? project[0]).toLowerCase();
+      const assignedFreelancer = String(
+        project.freelancer ?? project[1],
+      ).toLowerCase();
+      const currentAccount = connectedAccount.toLowerCase();
+
+      let role: WalletRole = "unknown";
+
+      if (currentAccount === client) {
+        role = "client";
+      } else if (currentAccount === assignedFreelancer) {
+        role = "freelancer";
+      } else if (currentAccount === String(arbitrator).toLowerCase()) {
+        role = "arbitrator";
+      }
+
+      setWalletRole(role);
+      setMessage(`Connected wallet role for project ${projectId}: ${role}.`);
+    } catch (error) {
+      setWalletRole("unknown");
+      setMessage(errorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // Automatically detect the wallet role when the account or project changes.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function detectRoleAutomatically() {
+      if (!account || !/^\d+$/.test(projectId)) {
+        setWalletRole("unknown");
+        return;
+      }
+
+      try {
+        const provider = await getProvider();
+        const signer = await provider.getSigner();
+        const connectedAccount = (await signer.getAddress()).toLowerCase();
+
+        if (connectedAccount !== account.toLowerCase()) {
+          if (!cancelled) setWalletRole("unknown");
+          return;
+        }
+
+        const contract = await getEscrowContract();
+
+        const [project, arbitrator] = await Promise.all([
+          contract.projects(BigInt(projectId)),
+          contract.arbitrator(),
+        ]);
+
+        if (cancelled) return;
+
+        const client = String(project.client ?? project[0]).toLowerCase();
+        const assignedFreelancer = String(
+          project.freelancer ?? project[1],
+        ).toLowerCase();
+
+        let role: WalletRole = "unknown";
+
+        if (connectedAccount === client) {
+          role = "client";
+        } else if (connectedAccount === assignedFreelancer) {
+          role = "freelancer";
+        } else if (connectedAccount === String(arbitrator).toLowerCase()) {
+          role = "arbitrator";
+        }
+
+        setWalletRole(role);
+      } catch {
+        if (!cancelled) setWalletRole("unknown");
+      }
+    }
+
+    void detectRoleAutomatically();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [account, projectId, getProvider]);
 
   async function switchToSepolia() {
     try {
@@ -220,6 +305,48 @@ export default function Home() {
     setMessage("");
   }
 
+  async function refreshOnChainData() {
+    const projectIsValid = /^\d+$/.test(projectId);
+    const milestoneIsValid = /^\d+$/.test(milestoneIndex);
+
+    const provider = await getProvider();
+    const signer = await provider.getSigner();
+    const signerAddress = await signer.getAddress();
+    const contract = await getEscrowContract();
+
+    setAccount(signerAddress);
+
+    const networkInfo = await provider.getNetwork();
+    setNetwork(`${networkInfo.name} (Chain ID: ${networkInfo.chainId})`);
+
+    const balance = await contract.pendingWithdrawals(signerAddress);
+    setWithdrawableBalance((Number(balance) / 1e18).toFixed(6));
+
+    if (projectIsValid && milestoneIsValid) {
+      const result = await contract.getMilestone(
+        BigInt(projectId),
+        BigInt(milestoneIndex),
+      );
+
+      const details = {
+        description: result.description ?? result[0],
+        submissionURI: result.submissionURI ?? result[1],
+        amountWei: (result.amount ?? result[2]).toString(),
+        amountETH: (Number(result.amount ?? result[2]) / 1e18).toString(),
+        deadline: (result.deadline ?? result[3]).toString(),
+        submittedAt: (result.submittedAt ?? result[4]).toString(),
+        disputedAt: (result.disputedAt ?? result[5]).toString(),
+        revisionCount: Number(result.revisionCount ?? result[6]),
+        statusCode: Number(result.status ?? result[7]),
+        status: getMilestoneStatusLabel(result.status ?? result[7]),
+      };
+
+      setMilestoneDetails(JSON.stringify(details, null, 2));
+    }
+
+    return contract;
+  }
+
   async function sendTransaction(
     operation: () => Promise<TransactionResponse>,
     successText: (
@@ -237,16 +364,13 @@ export default function Home() {
       const tx = await operation();
       submittedHash = tx.hash;
 
-      console.log("Transaction hash:", tx.hash);
-      console.log("Transaction sender:", tx.from);
-      console.log("Transaction destination:", tx.to);
-
-      setMessage(`Transaction submitted: ${tx.hash}`);
       setLastTransaction({
         hash: tx.hash,
         status: "pending",
         message: "Waiting for blockchain confirmation...",
       });
+
+      setMessage(`Transaction submitted: ${tx.hash}`);
 
       const receipt = await tx.wait();
 
@@ -270,22 +394,51 @@ export default function Home() {
 
       const result = await successText(receipt, tx.hash);
 
-      setMessage(result);
       setLastTransaction({
         hash: tx.hash,
         status: "confirmed",
         message: `Confirmed in block ${receipt.blockNumber}.`,
       });
+
+      try {
+        await refreshOnChainData();
+        setMessage(`${result}\nMilestone and wallet balance refreshed.`);
+      } catch (refreshError) {
+        setMessage(
+          `${result}\nTransaction confirmed, but automatic refresh failed: ${errorMessage(refreshError)}. Click Read On-Chain State or Refresh Balance.`,
+        );
+      }
     } catch (error) {
       console.error("Contract transaction failed:", error);
       setMessage(errorMessage(error));
 
-      if (submittedHash && !minedFailed) {
+      // ethers can throw from tx.wait() when a mined transaction reverts.
+      const txError = error as {
+        receipt?: { status?: number; hash?: string };
+        transaction?: { hash?: string };
+      };
+
+      const errorReceipt = txError.receipt;
+      const failedHash =
+        submittedHash || errorReceipt?.hash || txError.transaction?.hash || "";
+
+      if (failedHash && errorReceipt?.status === 0) {
+        setLastTransaction({
+          hash: failedHash,
+          status: "failed",
+          message: "The transaction was mined but reverted on-chain.",
+        });
+      } else if (submittedHash && minedFailed) {
+        setLastTransaction({
+          hash: submittedHash,
+          status: "failed",
+          message: "The transaction reverted on-chain.",
+        });
+      } else if (submittedHash) {
         setLastTransaction({
           hash: submittedHash,
           status: "pending",
-          message:
-            "Confirmation could not be verified. Open Etherscan to check the transaction status.",
+          message: "Confirmation could not be verified. Check Etherscan.",
         });
       }
     } finally {
@@ -299,17 +452,7 @@ export default function Home() {
         const provider = await getProvider();
         const signer = await provider.getSigner();
         const clientAddress = await signer.getAddress();
-
-        setAccount(clientAddress);
-        setNetwork("Sepolia (Chain ID: 11155111)");
-
         const freelancerAddress = freelancer.trim();
-
-        console.log("========== PROJECT CREATION DEBUG ==========");
-        console.log("Connected client wallet:", clientAddress);
-        console.log("Freelancer input value:", freelancerAddress);
-        console.log("Configured escrow contract:", CONTRACT_ADDRESS);
-        console.log("=============================================");
 
         if (!isAddress(freelancerAddress)) {
           throw new Error("Enter a valid freelancer wallet address.");
@@ -317,7 +460,7 @@ export default function Home() {
 
         if (freelancerAddress.toLowerCase() === clientAddress.toLowerCase()) {
           throw new Error(
-            "The freelancer address must differ from the connected client wallet.",
+            "The freelancer address must differ from the client.",
           );
         }
 
@@ -371,32 +514,20 @@ export default function Home() {
         );
 
         const contract = await getEscrowContract();
-        const arbitrator = String(await contract.arbitrator());
+        const arbitrator = String(await contract.arbitrator()).toLowerCase();
 
-        if (arbitrator.toLowerCase() === freelancerAddress.toLowerCase()) {
-          throw new Error(
-            "The arbitrator cannot be the freelancer. Enter the intended freelancer wallet address.",
-          );
+        if (arbitrator === freelancerAddress.toLowerCase()) {
+          throw new Error("The arbitrator cannot be the freelancer.");
         }
 
-        if (arbitrator.toLowerCase() === clientAddress.toLowerCase()) {
-          throw new Error(
-            "The arbitrator cannot be the client. Connect a different client wallet.",
-          );
+        if (arbitrator === clientAddress.toLowerCase()) {
+          throw new Error("The arbitrator cannot be the client.");
         }
 
-        console.log("Final createProject arguments:", {
-          freelancer: freelancerAddress,
-          descriptions,
-          amountsWei: amounts.map(String),
-          deadlines: deadlines.map(String),
-          valueWei: totalWei.toString(),
-          transactionFrom: clientAddress,
-          transactionTo: CONTRACT_ADDRESS,
-        });
-
+        setAccount(clientAddress);
+        setNetwork("Sepolia (Chain ID: 11155111)");
         setMessage(
-          `Check MetaMask before confirming.\nClient/sender: ${clientAddress}\nFreelancer/recipient: ${freelancerAddress}\nEscrow contract: ${CONTRACT_ADDRESS}`,
+          `Confirm in MetaMask.\nClient: ${clientAddress}\nFreelancer: ${freelancerAddress}\nEscrow: ${CONTRACT_ADDRESS}`,
         );
 
         const tx = (await contract.createProject(
@@ -409,13 +540,13 @@ export default function Home() {
 
         if (tx.from.toLowerCase() !== clientAddress.toLowerCase()) {
           throw new Error(
-            `Unexpected transaction sender. Expected ${clientAddress}, received ${tx.from}.`,
+            "Transaction sender does not match the connected client.",
           );
         }
 
         if (!tx.to || tx.to.toLowerCase() !== CONTRACT_ADDRESS.toLowerCase()) {
           throw new Error(
-            `Unexpected transaction destination. Expected ${CONTRACT_ADDRESS}, received ${tx.to ?? "none"}.`,
+            "Transaction destination does not match the escrow contract.",
           );
         }
 
@@ -450,11 +581,12 @@ export default function Home() {
 
         if (newProjectId !== null) {
           setProjectId(newProjectId);
+          setWalletRole("client");
 
-          return `Project created and funded successfully!\nProject ID: ${newProjectId}\nTransaction: ${hash}\nView: https://sepolia.etherscan.io/tx/${hash}`;
+          return `Project created and funded successfully!\nProject ID: ${newProjectId}\nTransaction: https://sepolia.etherscan.io/tx/${hash}`;
         }
 
-        return `Transaction confirmed in block ${receipt.blockNumber}, but the ProjectCreated event was not found in the receipt. Check the transaction on Etherscan: https://sepolia.etherscan.io/tx/${hash}`;
+        return `Transaction confirmed in block ${receipt.blockNumber}, but the ProjectCreated event was not found. https://sepolia.etherscan.io/tx/${hash}`;
       },
     );
   }
@@ -472,22 +604,30 @@ export default function Home() {
       }
 
       await getProvider();
-
       const contract = await getEscrowContract();
+
       const result = await contract.getMilestone(
         BigInt(projectId),
         BigInt(milestoneIndex),
       );
 
-      setMilestoneDetails(
-        JSON.stringify(
-          result,
-          (_, value) => (typeof value === "bigint" ? value.toString() : value),
-          2,
-        ),
-      );
+      const details = {
+        description: result.description ?? result[0],
+        submissionURI: result.submissionURI ?? result[1],
+        amountWei: (result.amount ?? result[2]).toString(),
+        amountETH: (Number(result.amount ?? result[2]) / 1e18).toString(),
+        deadline: (result.deadline ?? result[3]).toString(),
+        submittedAt: (result.submittedAt ?? result[4]).toString(),
+        disputedAt: (result.disputedAt ?? result[5]).toString(),
+        revisionCount: Number(result.revisionCount ?? result[6]),
+        statusCode: Number(result.status ?? result[7]),
+        status: getMilestoneStatusLabel(result.status ?? result[7]),
+      };
 
-      setMessage("Milestone data loaded from Sepolia.");
+      setMilestoneDetails(JSON.stringify(details, null, 2));
+      setMessage(
+        `Milestone ${milestoneIndex} for project ${projectId}: ${details.status}.`,
+      );
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
@@ -505,12 +645,10 @@ export default function Home() {
 
     try {
       await getProvider();
-
       const contract = await getEscrowContract();
       const balance = await contract.pendingWithdrawals(account);
 
       setWithdrawableBalance((Number(balance) / 1e18).toFixed(6));
-
       setMessage("Withdrawable balance loaded from Sepolia.");
     } catch (error) {
       setMessage(errorMessage(error));
@@ -522,10 +660,11 @@ export default function Home() {
   async function withdrawFunds() {
     await sendTransaction(
       async () => {
-        await getProvider();
-
+        const provider = await getProvider();
+        const signer = await provider.getSigner();
+        const signerAddress = await signer.getAddress();
         const contract = await getEscrowContract();
-        const balance = await contract.pendingWithdrawals(account);
+        const balance = await contract.pendingWithdrawals(signerAddress);
 
         if (balance === BigInt(0)) {
           throw new Error("Your wallet has no funds available to withdraw.");
@@ -535,13 +674,19 @@ export default function Home() {
       },
       (receipt, hash) => {
         setWithdrawableBalance("0.000000");
-
-        return `Withdrawal confirmed in block ${receipt.blockNumber}. Transaction: https://sepolia.etherscan.io/tx/${hash}`;
+        return `Withdrawal confirmed in block ${receipt.blockNumber}. https://sepolia.etherscan.io/tx/${hash}`;
       },
     );
   }
 
   async function submitWork() {
+    if (walletRole !== "freelancer") {
+      setMessage(
+        "Connect the assigned freelancer wallet and wait for automatic role detection.",
+      );
+      return;
+    }
+
     await sendTransaction(
       async () => {
         await getProvider();
@@ -557,14 +702,8 @@ export default function Home() {
         const contract = await getEscrowContract();
         const fragment = contract.interface.getFunction("submitWork");
 
-        if (!fragment) {
-          throw new Error("submitWork is missing from the contract ABI.");
-        }
-
-        if (fragment.inputs.length !== 3) {
-          throw new Error(
-            `The ABI defines submitWork with ${fragment.inputs.length} arguments. Check the call against Escrow.sol.`,
-          );
+        if (!fragment || fragment.inputs.length !== 3) {
+          throw new Error("The contract ABI does not match submitWork.");
         }
 
         return (await contract.submitWork(
@@ -574,11 +713,18 @@ export default function Home() {
         )) as TransactionResponse;
       },
       (receipt, hash) =>
-        `Work submission confirmed in block ${receipt.blockNumber}. Transaction: ${hash}`,
+        `Work submission confirmed in block ${receipt.blockNumber}. https://sepolia.etherscan.io/tx/${hash}`,
     );
   }
 
   async function approveMilestone() {
+    if (walletRole !== "client") {
+      setMessage(
+        "Connect the project's client wallet and wait for automatic role detection.",
+      );
+      return;
+    }
+
     await sendTransaction(
       async () => {
         await getProvider();
@@ -590,14 +736,8 @@ export default function Home() {
         const contract = await getEscrowContract();
         const fragment = contract.interface.getFunction("approveMilestone");
 
-        if (!fragment) {
-          throw new Error("approveMilestone is missing from the contract ABI.");
-        }
-
-        if (fragment.inputs.length !== 2) {
-          throw new Error(
-            `The ABI defines approveMilestone with ${fragment.inputs.length} arguments. Check the call against Escrow.sol.`,
-          );
+        if (!fragment || fragment.inputs.length !== 2) {
+          throw new Error("The contract ABI does not match approveMilestone.");
         }
 
         return (await contract.approveMilestone(
@@ -606,11 +746,18 @@ export default function Home() {
         )) as TransactionResponse;
       },
       (receipt, hash) =>
-        `Milestone approval confirmed in block ${receipt.blockNumber}. Transaction: ${hash}`,
+        `Milestone approval confirmed in block ${receipt.blockNumber}. https://sepolia.etherscan.io/tx/${hash}`,
     );
   }
 
   async function requestRevision() {
+    if (walletRole !== "client") {
+      setMessage(
+        "Connect the project's client wallet and wait for automatic role detection.",
+      );
+      return;
+    }
+
     await sendTransaction(
       async () => {
         await getProvider();
@@ -626,14 +773,8 @@ export default function Home() {
         const contract = await getEscrowContract();
         const fragment = contract.interface.getFunction("requestRevision");
 
-        if (!fragment) {
-          throw new Error("requestRevision is missing from the contract ABI.");
-        }
-
-        if (fragment.inputs.length !== 3) {
-          throw new Error(
-            `Expected 3 requestRevision arguments, but the ABI defines ${fragment.inputs.length}.`,
-          );
+        if (!fragment || fragment.inputs.length !== 3) {
+          throw new Error("The contract ABI does not match requestRevision.");
         }
 
         return (await contract.requestRevision(
@@ -643,7 +784,7 @@ export default function Home() {
         )) as TransactionResponse;
       },
       (receipt, hash) =>
-        `Revision request confirmed in block ${receipt.blockNumber}. Transaction: ${hash}`,
+        `Revision request confirmed in block ${receipt.blockNumber}. https://sepolia.etherscan.io/tx/${hash}`,
     );
   }
 
@@ -652,9 +793,11 @@ export default function Home() {
 
     const handleAccountsChanged = (accounts: string[]) => {
       setAccount(accounts[0] || "");
+      setWalletRole("unknown");
+      setWithdrawableBalance("0");
       setMessage(
         accounts.length
-          ? `MetaMask account changed to ${accounts[0]}. Verify the role before transacting.`
+          ? `Account changed to ${accounts[0]}. Detecting role for project ${projectId || "(enter a project ID)"}...`
           : "Wallet disconnected.",
       );
     };
@@ -668,7 +811,7 @@ export default function Home() {
       window.ethereum?.removeListener("accountsChanged", handleAccountsChanged);
       window.ethereum?.removeListener("chainChanged", handleChainChanged);
     };
-  }, []);
+  }, [projectId]);
 
   return (
     <main className="min-h-screen bg-slate-100 p-6 text-slate-900 md:p-8">
@@ -703,12 +846,12 @@ export default function Home() {
             >
               Test Escrow Contract
             </button>
-            
+
             <button
               type="button"
               onClick={detectWalletRole}
-              disabled={loading || !account || !projectId.trim()}
-              className="mt-4 ml-3 rounded-lg bg-indigo-600 px-5 py-3 text-white disabled:opacity-50"
+              disabled={loading || !account || !/^\d+$/.test(projectId)}
+              className="rounded-lg bg-indigo-600 px-5 py-3 text-white disabled:opacity-50"
             >
               Detect My Role
             </button>
@@ -716,12 +859,15 @@ export default function Home() {
 
           {account && (
             <div className="mt-4 space-y-2 text-sm">
-              <p className="wrap-break-word">Connected signer: {account}</p>
+              <p className="break-all">Connected signer: {account}</p>
               <p>Network: {network}</p>
+              <p>
+                Current role: <strong>{walletRole}</strong>
+              </p>
             </div>
           )}
 
-          <p className="mt-3 wrap-break-word text-sm text-slate-600">
+          <p className="mt-3 break-all text-sm text-slate-600">
             Escrow contract: {CONTRACT_ADDRESS}
           </p>
 
@@ -737,10 +883,8 @@ export default function Home() {
 
         <section className="mt-8 rounded-xl bg-white p-6 shadow">
           <h2 className="text-xl font-semibold">Wallet Funds</h2>
-
           <p className="mt-2 text-sm text-slate-600">
-            Pending milestone payments and refunds credited to your connected
-            wallet.
+            Pending milestone payments credited to the connected wallet.
           </p>
 
           <p className="mt-4 text-2xl font-semibold">
@@ -766,10 +910,9 @@ export default function Home() {
           </div>
 
           {lastTransaction && (
-            <section className="mt-4 rounded-lg border border-slate-200 p-4">
+            <div className="mt-4 rounded-lg border border-slate-200 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <h3 className="font-semibold">Latest Transaction</h3>
-
                 <span
                   className={`rounded-full px-3 py-1 text-sm ${
                     lastTransaction.status === "confirmed"
@@ -790,7 +933,6 @@ export default function Home() {
               <p className="mt-2 text-sm text-slate-600">
                 {lastTransaction.message}
               </p>
-
               <p className="mt-3 break-all font-mono text-sm">
                 {lastTransaction.hash}
               </p>
@@ -798,14 +940,13 @@ export default function Home() {
               <div className="mt-3 flex flex-wrap gap-3">
                 <button
                   type="button"
-                  onClick={() =>
-                    void navigator.clipboard.writeText(lastTransaction.hash)
-                  }
+                  onClick={() => {
+                    void navigator.clipboard.writeText(lastTransaction.hash);
+                  }}
                   className="rounded-lg border border-slate-300 px-4 py-2"
                 >
                   Copy hash
                 </button>
-
                 <a
                   href={`https://sepolia.etherscan.io/tx/${lastTransaction.hash}`}
                   target="_blank"
@@ -815,15 +956,15 @@ export default function Home() {
                   View on Etherscan ↗
                 </a>
               </div>
-            </section>
+            </div>
           )}
         </section>
 
         <section className="mt-8 rounded-xl bg-white p-6 shadow">
           <h2 className="text-xl font-semibold">Create Freelance Project</h2>
           <p className="mt-2 text-sm text-slate-600">
-            The connected client wallet funds the project. The address below is
-            the freelancer who will be assigned to the project.
+            The connected client funds escrow. The freelancer address is
+            assigned to the project.
           </p>
 
           <label className="mt-5 block text-sm font-medium">
@@ -840,14 +981,14 @@ export default function Home() {
 
           <div className="mt-3 rounded-lg bg-blue-50 p-3 text-sm">
             <p className="font-medium">Transaction participants</p>
-            <p className="mt-2 wrap-break-word">
-              Client / transaction sender: {account || "Connect MetaMask first"}
+            <p className="mt-2 break-all">
+              Client / sender: {account || "Connect MetaMask first"}
             </p>
-            <p className="mt-2 wrap-break-word">
-              Freelancer / project recipient:{" "}
+            <p className="mt-2 break-all">
+              Freelancer / recipient:{" "}
               {freelancer.trim() || "Enter freelancer address above"}
             </p>
-            <p className="mt-2 wrap-break-word">
+            <p className="mt-2 break-all">
               Escrow contract: {CONTRACT_ADDRESS}
             </p>
           </div>
@@ -861,7 +1002,6 @@ export default function Home() {
             >
               <div className="flex items-center justify-between">
                 <h4 className="font-medium">Milestone {index + 1}</h4>
-
                 {milestones.length > 1 && (
                   <button
                     type="button"
@@ -945,7 +1085,10 @@ export default function Home() {
               <label className="block text-sm font-medium">Project ID</label>
               <input
                 value={projectId}
-                onChange={(event) => setProjectId(event.target.value)}
+                onChange={(event) => {
+                  setProjectId(event.target.value);
+                  setWalletRole("unknown");
+                }}
                 inputMode="numeric"
                 className="mt-1 w-full rounded-lg border border-slate-300 p-3"
               />
@@ -979,65 +1122,80 @@ export default function Home() {
           )}
         </section>
 
-        <section className="mt-8 rounded-xl bg-white p-6 shadow">
-          <h2 className="text-xl font-semibold">Freelancer: Submit Work</h2>
-          <p className="mt-2 text-sm text-slate-600">
-            Connect the freelancer's MetaMask account before submitting work.
-          </p>
+        {walletRole === "freelancer" && (
+          <section className="mt-8 rounded-xl bg-white p-6 shadow">
+            <h2 className="text-xl font-semibold">Freelancer: Submit Work</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Submit work for the milestone assigned to your wallet.
+            </p>
 
-          <label className="mt-4 block text-sm font-medium">
-            Work URL or submission reference
-          </label>
-          <input
-            value={workSubmission}
-            onChange={(event) => setWorkSubmission(event.target.value)}
-            placeholder="https://... or an IPFS CID"
-            className="mt-1 w-full rounded-lg border border-slate-300 p-3"
-          />
-
-          <button
-            onClick={submitWork}
-            disabled={loading}
-            className="mt-4 w-full rounded-lg bg-purple-700 px-5 py-3 text-white disabled:opacity-50"
-          >
-            {loading ? "Processing..." : "Submit Work"}
-          </button>
-        </section>
-
-        <section className="mt-8 rounded-xl bg-white p-6 shadow">
-          <h2 className="text-xl font-semibold">Client: Review Milestone</h2>
-          <p className="mt-2 text-sm text-slate-600">
-            Connect the client MetaMask account before reviewing.
-          </p>
-          <label className="mt-4 block text-sm font-medium text-slate-700">
-            Reason for requesting revision
-          </label>
-          <textarea
-            value={revisionReason}
-            onChange={(event) => setRevisionReason(event.target.value)}
-            placeholder="Explain what needs to be corrected..."
-            className="mt-1 w-full rounded-lg border border-slate-300 p-3"
-            rows={3}
-          />
-
-          <div className="mt-4 flex flex-wrap gap-3">
-            <button
-              onClick={approveMilestone}
-              disabled={loading}
-              className="rounded-lg bg-green-600 px-5 py-3 text-white disabled:opacity-50"
-            >
-              Approve and Release Payment
-            </button>
+            <label className="mt-4 block text-sm font-medium">
+              Work URL or submission reference
+            </label>
+            <input
+              value={workSubmission}
+              onChange={(event) => setWorkSubmission(event.target.value)}
+              placeholder="https://... or an IPFS CID"
+              className="mt-1 w-full rounded-lg border border-slate-300 p-3"
+            />
 
             <button
-              onClick={requestRevision}
+              onClick={submitWork}
               disabled={loading}
-              className="rounded-lg bg-amber-600 px-5 py-3 text-white disabled:opacity-50"
+              className="mt-4 w-full rounded-lg bg-purple-700 px-5 py-3 text-white disabled:opacity-50"
             >
-              Request Revision
+              {loading ? "Processing..." : "Submit Work"}
             </button>
-          </div>
-        </section>
+          </section>
+        )}
+
+        {walletRole === "client" && (
+          <section className="mt-8 rounded-xl bg-white p-6 shadow">
+            <h2 className="text-xl font-semibold">Client: Review Milestone</h2>
+            <p className="mt-2 text-sm text-slate-600">
+              Review submitted work, approve it, or request a revision.
+            </p>
+
+            <label className="mt-4 block text-sm font-medium">
+              Reason for requesting revision
+            </label>
+            <textarea
+              value={revisionReason}
+              onChange={(event) => setRevisionReason(event.target.value)}
+              placeholder="Explain what needs to be corrected..."
+              className="mt-1 w-full rounded-lg border border-slate-300 p-3"
+              rows={3}
+            />
+
+            <div className="mt-4 flex flex-wrap gap-3">
+              <button
+                onClick={approveMilestone}
+                disabled={loading}
+                className="rounded-lg bg-green-600 px-5 py-3 text-white disabled:opacity-50"
+              >
+                Approve and Release Payment
+              </button>
+
+              <button
+                onClick={requestRevision}
+                disabled={loading}
+                className="rounded-lg bg-amber-600 px-5 py-3 text-white disabled:opacity-50"
+              >
+                Request Revision
+              </button>
+            </div>
+          </section>
+        )}
+
+        {walletRole === "arbitrator" && (
+          <section className="mt-8 rounded-xl border border-amber-200 bg-amber-50 p-6">
+            <h2 className="text-xl font-semibold">Arbitrator Wallet</h2>
+            <p className="mt-2 text-sm">
+              The connected account is the contract arbitrator. Client and
+              freelancer actions are hidden.
+            </p>
+          </section>
+        )}
       </div>
     </main>
   );
