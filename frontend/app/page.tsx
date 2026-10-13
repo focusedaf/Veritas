@@ -45,16 +45,26 @@ export default function Home() {
   const [network, setNetwork] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
-
+  const [walletRole, setWalletRole] = useState<
+    "client" | "freelancer" | "arbitrator" | "unknown"
+  >("unknown");
   const [freelancer, setFreelancer] = useState("");
   const [milestones, setMilestones] = useState<MilestoneInput[]>([
     { description: "", amount: "", deadline: "" },
   ]);
-
-  const [projectId, setProjectId] = useState("3");
+  
+  const [projectId, setProjectId] = useState("");
   const [milestoneIndex, setMilestoneIndex] = useState("0");
   const [workSubmission, setWorkSubmission] = useState("");
   const [milestoneDetails, setMilestoneDetails] = useState("");
+  const [revisionReason, setRevisionReason] = useState("");
+  const [withdrawableBalance, setWithdrawableBalance] = useState("0");
+
+  const [lastTransaction, setLastTransaction] = useState<{
+    hash: string;
+    status: "pending" | "confirmed" | "failed";
+    message: string;
+  } | null>(null);
 
   const totalEth = milestones.reduce(
     (total, milestone) => total + (Number(milestone.amount) || 0),
@@ -75,6 +85,53 @@ export default function Home() {
 
     return provider;
   }, []);
+
+  async function detectWalletRole() {
+    if (!account) {
+      setWalletRole("unknown");
+      setMessage("Connect MetaMask first.");
+      return;
+    }
+
+    if (!/^\d+$/.test(projectId)) {
+      setWalletRole("unknown");
+      setMessage("Enter a valid project ID first.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      await getProvider();
+
+      const contract = await getEscrowContract();
+      const [project, arbitrator] = await Promise.all([
+        contract.projects(BigInt(projectId)),
+        contract.arbitrator(),
+      ]);
+
+      const client = String(project.client ?? project[0]);
+      const freelancerAddress = String(project.freelancer ?? project[1]);
+
+      let role: "client" | "freelancer" | "arbitrator" | "unknown" = "unknown";
+
+      if (account.toLowerCase() === client.toLowerCase()) {
+        role = "client";
+      } else if (account.toLowerCase() === freelancerAddress.toLowerCase()) {
+        role = "freelancer";
+      } else if (account.toLowerCase() === String(arbitrator).toLowerCase()) {
+        role = "arbitrator";
+      }
+
+      setWalletRole(role);
+      setMessage(`Connected wallet role for project ${projectId}: ${role}.`);
+    } catch (error) {
+      setWalletRole("unknown");
+      setMessage(errorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }
 
   const connectWallet = useCallback(async () => {
     try {
@@ -173,26 +230,64 @@ export default function Home() {
     if (loading) return;
 
     setLoading(true);
+    let submittedHash = "";
+    let minedFailed = false;
 
     try {
       const tx = await operation();
+      submittedHash = tx.hash;
 
       console.log("Transaction hash:", tx.hash);
       console.log("Transaction sender:", tx.from);
       console.log("Transaction destination:", tx.to);
 
       setMessage(`Transaction submitted: ${tx.hash}`);
+      setLastTransaction({
+        hash: tx.hash,
+        status: "pending",
+        message: "Waiting for blockchain confirmation...",
+      });
 
       const receipt = await tx.wait();
 
-      if (!receipt || receipt.status !== 1) {
+      if (!receipt) {
+        throw new Error(
+          "No transaction receipt yet. Check Etherscan for the latest status.",
+        );
+      }
+
+      if (receipt.status !== 1) {
+        minedFailed = true;
+
+        setLastTransaction({
+          hash: tx.hash,
+          status: "failed",
+          message: "The transaction was mined but reverted.",
+        });
+
         throw new Error("Transaction failed on the blockchain.");
       }
 
-      setMessage(await successText(receipt, tx.hash));
+      const result = await successText(receipt, tx.hash);
+
+      setMessage(result);
+      setLastTransaction({
+        hash: tx.hash,
+        status: "confirmed",
+        message: `Confirmed in block ${receipt.blockNumber}.`,
+      });
     } catch (error) {
       console.error("Contract transaction failed:", error);
       setMessage(errorMessage(error));
+
+      if (submittedHash && !minedFailed) {
+        setLastTransaction({
+          hash: submittedHash,
+          status: "pending",
+          message:
+            "Confirmation could not be verified. Open Etherscan to check the transaction status.",
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -400,6 +495,52 @@ export default function Home() {
     }
   }
 
+  async function loadWithdrawableBalance() {
+    if (!account) {
+      setMessage("Connect MetaMask before checking your balance.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      await getProvider();
+
+      const contract = await getEscrowContract();
+      const balance = await contract.pendingWithdrawals(account);
+
+      setWithdrawableBalance((Number(balance) / 1e18).toFixed(6));
+
+      setMessage("Withdrawable balance loaded from Sepolia.");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function withdrawFunds() {
+    await sendTransaction(
+      async () => {
+        await getProvider();
+
+        const contract = await getEscrowContract();
+        const balance = await contract.pendingWithdrawals(account);
+
+        if (balance === BigInt(0)) {
+          throw new Error("Your wallet has no funds available to withdraw.");
+        }
+
+        return (await contract.withdraw()) as TransactionResponse;
+      },
+      (receipt, hash) => {
+        setWithdrawableBalance("0.000000");
+
+        return `Withdrawal confirmed in block ${receipt.blockNumber}. Transaction: https://sepolia.etherscan.io/tx/${hash}`;
+      },
+    );
+  }
+
   async function submitWork() {
     await sendTransaction(
       async () => {
@@ -478,6 +619,10 @@ export default function Home() {
           throw new Error("Enter valid project and milestone IDs.");
         }
 
+        if (!revisionReason.trim()) {
+          throw new Error("Enter a reason for requesting a revision.");
+        }
+
         const contract = await getEscrowContract();
         const fragment = contract.interface.getFunction("requestRevision");
 
@@ -485,15 +630,16 @@ export default function Home() {
           throw new Error("requestRevision is missing from the contract ABI.");
         }
 
-        if (fragment.inputs.length !== 2) {
+        if (fragment.inputs.length !== 3) {
           throw new Error(
-            `The ABI defines requestRevision with ${fragment.inputs.length} arguments. Check the call against Escrow.sol.`,
+            `Expected 3 requestRevision arguments, but the ABI defines ${fragment.inputs.length}.`,
           );
         }
 
         return (await contract.requestRevision(
           BigInt(projectId),
           BigInt(milestoneIndex),
+          revisionReason.trim(),
         )) as TransactionResponse;
       },
       (receipt, hash) =>
@@ -557,6 +703,15 @@ export default function Home() {
             >
               Test Escrow Contract
             </button>
+            
+            <button
+              type="button"
+              onClick={detectWalletRole}
+              disabled={loading || !account || !projectId.trim()}
+              className="mt-4 ml-3 rounded-lg bg-indigo-600 px-5 py-3 text-white disabled:opacity-50"
+            >
+              Detect My Role
+            </button>
           </div>
 
           {account && (
@@ -577,6 +732,90 @@ export default function Home() {
             >
               {message}
             </p>
+          )}
+        </section>
+
+        <section className="mt-8 rounded-xl bg-white p-6 shadow">
+          <h2 className="text-xl font-semibold">Wallet Funds</h2>
+
+          <p className="mt-2 text-sm text-slate-600">
+            Pending milestone payments and refunds credited to your connected
+            wallet.
+          </p>
+
+          <p className="mt-4 text-2xl font-semibold">
+            {withdrawableBalance} ETH
+          </p>
+
+          <div className="mt-4 flex flex-wrap gap-3">
+            <button
+              onClick={loadWithdrawableBalance}
+              disabled={loading || !account}
+              className="rounded-lg border border-slate-300 px-5 py-3 disabled:opacity-50"
+            >
+              Refresh Balance
+            </button>
+
+            <button
+              onClick={withdrawFunds}
+              disabled={loading || !account}
+              className="rounded-lg bg-blue-700 px-5 py-3 text-white disabled:opacity-50"
+            >
+              {loading ? "Processing..." : "Withdraw Funds"}
+            </button>
+          </div>
+
+          {lastTransaction && (
+            <section className="mt-4 rounded-lg border border-slate-200 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="font-semibold">Latest Transaction</h3>
+
+                <span
+                  className={`rounded-full px-3 py-1 text-sm ${
+                    lastTransaction.status === "confirmed"
+                      ? "bg-green-100 text-green-800"
+                      : lastTransaction.status === "failed"
+                        ? "bg-red-100 text-red-800"
+                        : "bg-amber-100 text-amber-800"
+                  }`}
+                >
+                  {lastTransaction.status === "confirmed"
+                    ? "Confirmed"
+                    : lastTransaction.status === "failed"
+                      ? "Failed"
+                      : "Pending confirmation"}
+                </span>
+              </div>
+
+              <p className="mt-2 text-sm text-slate-600">
+                {lastTransaction.message}
+              </p>
+
+              <p className="mt-3 break-all font-mono text-sm">
+                {lastTransaction.hash}
+              </p>
+
+              <div className="mt-3 flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void navigator.clipboard.writeText(lastTransaction.hash)
+                  }
+                  className="rounded-lg border border-slate-300 px-4 py-2"
+                >
+                  Copy hash
+                </button>
+
+                <a
+                  href={`https://sepolia.etherscan.io/tx/${lastTransaction.hash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-lg bg-blue-600 px-4 py-2 text-white"
+                >
+                  View on Etherscan ↗
+                </a>
+              </div>
+            </section>
           )}
         </section>
 
@@ -770,6 +1009,16 @@ export default function Home() {
           <p className="mt-2 text-sm text-slate-600">
             Connect the client MetaMask account before reviewing.
           </p>
+          <label className="mt-4 block text-sm font-medium text-slate-700">
+            Reason for requesting revision
+          </label>
+          <textarea
+            value={revisionReason}
+            onChange={(event) => setRevisionReason(event.target.value)}
+            placeholder="Explain what needs to be corrected..."
+            className="mt-1 w-full rounded-lg border border-slate-300 p-3"
+            rows={3}
+          />
 
           <div className="mt-4 flex flex-wrap gap-3">
             <button
