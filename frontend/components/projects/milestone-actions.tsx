@@ -65,6 +65,47 @@ export function MilestoneActions({
     }
   }
 
+  async function handleSubmitWork(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    setError(null);
+
+    const trimmedURI = submissionURI.trim();
+
+    let parsedURL: URL;
+
+    try {
+      parsedURL = new URL(trimmedURI);
+    } catch {
+      setError("Please enter a valid URL, including https://");
+      return;
+    }
+
+    if (!["http:", "https:"].includes(parsedURL.protocol)) {
+      setError("Enter a valid HTTP or HTTPS URL.");
+      return;
+    }
+
+    if (!onSubmitWork) {
+      setError("Work submission has not been connected to the contract yet.");
+      return;
+    }
+
+    setBusy(true);
+
+    try {
+      await onSubmitWork(trimmedURI);
+      setSubmissionURI("");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Submission failed.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function buttonClass(color: "green" | "blue" | "amber" | "red") {
     const styles = {
       green: "bg-emerald-400 text-black hover:bg-emerald-300",
@@ -91,53 +132,60 @@ export function MilestoneActions({
         </span>
       </div>
 
-      {/* Freelancer: submit work for an eligible milestone */}
+      {/* Freelancer: inline work submission form */}
       {role === "freelancer" &&
         ["Funded", "Revision Requested"].includes(milestone.status) && (
-          <div className="mt-5 space-y-3">
-            <label className="block text-sm text-zinc-300">
-              Work submission URL
+          <form onSubmit={handleSubmitWork} className="mt-5 space-y-4">
+            <div className="space-y-2">
+              <label
+                htmlFor={`submission-url-${milestone.index}`}
+                className="block text-sm font-medium text-zinc-300"
+              >
+                Work submission URL
+              </label>
+
               <input
+                id={`submission-url-${milestone.index}`}
                 type="url"
                 value={submissionURI}
-                onChange={(event) => setSubmissionURI(event.target.value)}
-                placeholder="https://..."
-                className="mt-2 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-emerald-400/50"
+                onChange={(event) => {
+                  setSubmissionURI(event.target.value);
+                  if (error) setError(null);
+                }}
+                placeholder="https://github.com/username/project"
+                disabled={disabled}
+                required
+                className="h-11 w-full rounded-lg border border-white/10 bg-black/20 px-4 text-sm text-white outline-none placeholder:text-zinc-600 transition focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/20 disabled:cursor-not-allowed disabled:opacity-50"
               />
-            </label>
+
+              <p className="text-xs text-zinc-500">
+                Share a GitHub repository, Google Drive file, or project demo.
+              </p>
+            </div>
 
             <button
-              type="button"
+              type="submit"
               disabled={disabled || !submissionURI.trim() || !onSubmitWork}
               className={buttonClass("blue")}
-              onClick={() =>
-                void runAction(
-                  onSubmitWork
-                    ? () => onSubmitWork(submissionURI.trim())
-                    : undefined,
-                )
-              }
             >
               <FileUp className="size-4" />
-              Submit work
+              {busy ? "Submitting..." : "Submit work"}
             </button>
-          </div>
+          </form>
         )}
 
-      {/* Client: approve or request a revision */}
+      {/* Client: approve or request revision */}
       {role === "client" && milestone.status === "Submitted" && (
         <div className="mt-5 space-y-4">
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={disabled || !onApprove}
-              className={buttonClass("green")}
-              onClick={() => void runAction(onApprove)}
-            >
-              <CheckCircle2 className="size-4" />
-              Approve milestone
-            </button>
-          </div>
+          <button
+            type="button"
+            disabled={disabled || !onApprove}
+            className={buttonClass("green")}
+            onClick={() => void runAction(onApprove)}
+          >
+            <CheckCircle2 className="size-4" />
+            Approve milestone
+          </button>
 
           <label className="block text-sm text-zinc-300">
             Revision reason
@@ -147,6 +195,7 @@ export function MilestoneActions({
               rows={3}
               maxLength={1000}
               placeholder="Explain what needs to be changed..."
+              disabled={disabled}
               className="mt-2 w-full resize-y rounded-lg border border-white/10 bg-black/20 p-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-emerald-400/50"
             />
           </label>
@@ -169,7 +218,7 @@ export function MilestoneActions({
         </div>
       )}
 
-      {/* Client or freelancer: disputes are only valid for submitted work */}
+      {/* Client or freelancer: raise a dispute */}
       {(role === "client" || role === "freelancer") &&
         milestone.status === "Submitted" && (
           <div className="mt-5 space-y-3">
@@ -203,6 +252,7 @@ export function MilestoneActions({
               value={freelancerAward}
               onChange={(event) => setFreelancerAward(event.target.value)}
               placeholder="0.01"
+              disabled={disabled}
               className="mt-2 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-emerald-400/50"
             />
           </label>
@@ -236,7 +286,7 @@ export function MilestoneActions({
         </div>
       )}
 
-      {/* Withdrawals belong to the wallet, not to an individual milestone. */}
+      {/* Freelancer: withdraw funds */}
       {role === "freelancer" &&
         milestone.status === "Paid" &&
         onWithdraw && (
@@ -250,6 +300,7 @@ export function MilestoneActions({
               <Wallet className="size-4" />
               Withdraw funds
             </button>
+
             <p className="mt-2 text-xs text-zinc-500">
               Withdrawal uses your wallet&apos;s accumulated withdrawable
               balance.

@@ -1,10 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 import { loadWalletProjects } from "@/lib/services/projects";
 import type { ProjectMilestone, WalletProject } from "@/types/project";
 
-type UseProjectsResult = {
+export type UseProjectsResult = {
   projects: WalletProject[];
   milestones: Record<string, ProjectMilestone[]>;
   isLoading: boolean;
@@ -13,7 +19,17 @@ type UseProjectsResult = {
   refreshProjects: () => Promise<void>;
 };
 
-export function useProjects(
+export type ProjectsContextValue = UseProjectsResult & {
+  withdrawable: string;
+  isWithdrawing: boolean;
+  actionError: string | null;
+  withdraw: () => Promise<void>;
+  refreshAll: () => Promise<void>;
+};
+
+export const ProjectsContext = createContext<ProjectsContextValue | null>(null);
+
+export function useProjectsLoader(
   walletAddress: string | null | undefined,
 ): UseProjectsResult {
   const [projects, setProjects] = useState<WalletProject[]>([]);
@@ -66,4 +82,17 @@ export function useProjects(
     latestBlock,
     refreshProjects,
   };
+}
+
+// Pages call this. The argument is ignored; data comes from <ProjectsProvider>.
+export function useProjects(
+  _walletAddress?: string | null,
+): ProjectsContextValue {
+  const ctx = useContext(ProjectsContext);
+
+  if (!ctx) {
+    throw new Error("useProjects must be used inside <ProjectsProvider>.");
+  }
+
+  return ctx;
 }

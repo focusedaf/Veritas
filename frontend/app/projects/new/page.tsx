@@ -1,28 +1,22 @@
-
 "use client";
 
 import { useMemo, useState, type FormEvent } from "react";
 import Link from "next/link";
 import {
   ArrowLeft,
+  CheckCircle2,
+  CircleAlert,
+  Coins,
+  ExternalLink,
+  FileText,
+  Loader2,
   Plus,
   Trash2,
   Wallet,
-  CalendarDays,
-  Coins,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
-  ExternalLink,
-  FileText,
 } from "lucide-react";
-import {
-  BrowserProvider,
-  formatEther,
-  isAddress,
-  parseEther,
-} from "ethers";
+import { BrowserProvider, isAddress, parseEther } from "ethers";
 
+import { Button } from "@/components/ui/button";
 import { getEscrowContract } from "@/lib/contract";
 import { useWallet } from "@/hooks/use-wallet";
 
@@ -41,26 +35,40 @@ type CreatedProject = {
 const MAX_MILESTONES = 20;
 const SEPOLIA_CHAIN_ID = 11155111;
 
+const panel = "rounded-xl border border-white/10 bg-[#111113]";
+const inputClass =
+  "w-full rounded-md border border-white/10 bg-black/20 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-zinc-600 focus:border-emerald-400/50 disabled:opacity-60";
+
+// Format a Date as the local "YYYY-MM-DDTHH:mm" string datetime-local expects.
+function toLocalInput(date: Date): string {
+  const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+  return shifted.toISOString().slice(0, 16);
+}
+
 function createMilestone(): MilestoneDraft {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
     description: "",
     amount: "",
-    deadline: defaultDeadline(),
+    deadline: "",
   };
 }
 
-function defaultDeadline(): string {
-  const date = new Date();
-  date.setDate(date.getDate() + 7);
-  date.setMinutes(date.getMinutes() - date.getTimezoneOffset());
-  return date.toISOString().slice(0, 16);
-}
+// Keep only digits and a single dot, with at most 18 decimal places.
+function sanitizeAmount(raw: string): string {
+  let value = raw.replace(/[^0-9.]/g, "");
 
-function displayETH(value: bigint): string {
-  return Number(formatEther(value)).toLocaleString("en-IN", {
-    maximumFractionDigits: 6,
-  });
+  const firstDot = value.indexOf(".");
+  if (firstDot !== -1) {
+    const whole = value.slice(0, firstDot);
+    const fraction = value
+      .slice(firstDot + 1)
+      .replace(/\./g, "")
+      .slice(0, 18);
+    value = `${whole}.${fraction}`;
+  }
+
+  return value;
 }
 
 function formatError(error: unknown): string {
@@ -104,6 +112,7 @@ export default function NewProjectPage() {
     isConnecting,
     connectWallet,
     isCorrectNetwork,
+    error: walletError,
   } = useWallet();
 
   const [freelancer, setFreelancer] = useState("");
@@ -112,35 +121,30 @@ export default function NewProjectPage() {
   ]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [createdProject, setCreatedProject] =
-    useState<CreatedProject | null>(null);
+  const [createdProject, setCreatedProject] = useState<CreatedProject | null>(
+    null,
+  );
 
-  const totalWei = useMemo(() => {
-    try {
-      if (milestones.some((milestone) => !milestone.amount.trim())) {
-        return null;
-      }
-
-      return milestones.reduce(
-        (total, milestone) => total + parseEther(milestone.amount.trim()),
-        BigInt(0)
-      );
-    } catch {
-      return null;
+  // Inline feedback for the freelancer field, shown while typing.
+  const freelancerHint = useMemo(() => {
+    const value = freelancer.trim();
+    if (!value) return "";
+    if (!isAddress(value)) return "This isn't a valid wallet address.";
+    if (address && value.toLowerCase() === address.toLowerCase()) {
+      return "You can't assign yourself as the freelancer.";
     }
-  }, [milestones]);
+    return "";
+  }, [freelancer, address]);
 
   function updateMilestone(
     id: string,
     field: keyof Omit<MilestoneDraft, "id">,
-    value: string
+    value: string,
   ) {
     setMilestones((current) =>
       current.map((milestone) =>
-        milestone.id === id
-          ? { ...milestone, [field]: value }
-          : milestone
-      )
+        milestone.id === id ? { ...milestone, [field]: value } : milestone,
+      ),
     );
   }
 
@@ -162,7 +166,7 @@ export default function NewProjectPage() {
 
     setError("");
     setMilestones((current) =>
-      current.filter((milestone) => milestone.id !== id)
+      current.filter((milestone) => milestone.id !== id),
     );
   }
 
@@ -207,64 +211,51 @@ export default function NewProjectPage() {
     try {
       for (let index = 0; index < milestones.length; index++) {
         const milestone = milestones[index];
+        const label = `Milestone ${index + 1}`;
         const description = milestone.description.trim();
 
         if (!description) {
-          throw new Error(
-            `Enter a description for milestone ${index + 1}.`
-          );
+          throw new Error(`${label}: enter a description.`);
         }
 
         if (description.length > 500) {
           throw new Error(
-            `The description for milestone ${index + 1} must be 500 characters or fewer.`
+            `${label}: description must be 500 characters or fewer.`,
           );
         }
 
-        if (!milestone.amount.trim()) {
-          throw new Error(
-            `Enter an ETH amount for milestone ${index + 1}.`
-          );
+        const rawAmount = milestone.amount.trim();
+
+        if (!rawAmount || rawAmount === ".") {
+          throw new Error(`${label}: enter an ETH amount.`);
         }
 
         let amount: bigint;
 
         try {
-          amount = parseEther(milestone.amount.trim());
+          amount = parseEther(rawAmount);
         } catch {
-          throw new Error(
-            `Enter a valid ETH amount for milestone ${index + 1}, with no more than 18 decimal places.`
-          );
+          throw new Error(`${label}: enter a valid ETH amount.`);
         }
 
         if (amount <= BigInt(0)) {
-          throw new Error(
-            `Milestone ${index + 1} must have an amount greater than zero.`
-          );
+          throw new Error(`${label}: amount must be greater than zero.`);
         }
 
         if (!milestone.deadline) {
-          throw new Error(
-            `Choose a deadline for milestone ${index + 1}.`
-          );
+          throw new Error(`${label}: choose a deadline.`);
         }
 
         const deadlineDate = new Date(milestone.deadline);
 
         if (Number.isNaN(deadlineDate.getTime())) {
-          throw new Error(
-            `Enter a valid deadline for milestone ${index + 1}.`
-          );
+          throw new Error(`${label}: enter a valid deadline.`);
         }
 
-        const deadlineSeconds = Math.floor(
-          deadlineDate.getTime() / 1000
-        );
+        const deadlineSeconds = Math.floor(deadlineDate.getTime() / 1000);
 
         if (deadlineSeconds <= nowInSeconds) {
-          throw new Error(
-            `The deadline for milestone ${index + 1} must be in the future.`
-          );
+          throw new Error(`${label}: deadline must be in the future.`);
         }
 
         descriptions.push(description);
@@ -272,17 +263,15 @@ export default function NewProjectPage() {
         deadlines.push(BigInt(deadlineSeconds));
       }
 
+      // The contract is funded with the sum of all milestone amounts.
       const total = amounts.reduce((sum, amount) => sum + amount, BigInt(0));
-
-      if (totalWei === null || total !== totalWei) {
-        throw new Error("Unable to calculate the project funding total.");
-      }
 
       setIsSubmitting(true);
 
-      // Verify the currently active MetaMask account.
       if (!window.ethereum) {
-        throw new Error("MetaMask is not installed. Please install it to continue.");
+        throw new Error(
+          "MetaMask is not installed. Please install it to continue.",
+        );
       }
 
       const provider = new BrowserProvider(window.ethereum);
@@ -296,7 +285,7 @@ export default function NewProjectPage() {
 
       if (actualAddress.toLowerCase() !== address.toLowerCase()) {
         throw new Error(
-          "Your active MetaMask account changed. Refresh the page and try again."
+          "Your active MetaMask account changed. Refresh the page and try again.",
         );
       }
 
@@ -306,32 +295,26 @@ export default function NewProjectPage() {
 
       const contract = await getEscrowContract();
 
-      // The contract owner/arbitrator cannot be the client or freelancer.
       const arbitratorAddress = (await contract.arbitrator()) as string;
 
-      if (
-        actualAddress.toLowerCase() === arbitratorAddress.toLowerCase()
-      ) {
+      if (actualAddress.toLowerCase() === arbitratorAddress.toLowerCase()) {
         throw new Error(
-          "The contract arbitrator cannot create a project as the client."
+          "The contract arbitrator cannot create a project as the client.",
         );
       }
 
-      if (
-        freelancerAddress.toLowerCase() === arbitratorAddress.toLowerCase()
-      ) {
+      if (freelancerAddress.toLowerCase() === arbitratorAddress.toLowerCase()) {
         throw new Error(
-          "The contract arbitrator cannot be assigned as the freelancer."
+          "The contract arbitrator cannot be assigned as the freelancer.",
         );
       }
 
-      // Submit the transaction and lock the complete milestone budget.
       const transaction = await contract.createProject(
         freelancerAddress,
         descriptions,
         amounts,
         deadlines,
-        { value: total }
+        { value: total },
       );
 
       const receipt = await transaction.wait();
@@ -340,7 +323,6 @@ export default function NewProjectPage() {
         throw new Error("The project creation transaction failed on-chain.");
       }
 
-      // Read the new project ID from the ProjectCreated event.
       let projectId: string | null = null;
 
       for (const log of receipt.logs) {
@@ -363,10 +345,7 @@ export default function NewProjectPage() {
         }
       }
 
-      setCreatedProject({
-        id: projectId,
-        hash: transaction.hash,
-      });
+      setCreatedProject({ id: projectId, hash: transaction.hash });
     } catch (submitError) {
       setError(formatError(submitError));
     } finally {
@@ -374,25 +353,30 @@ export default function NewProjectPage() {
     }
   }
 
+  // ---- Success ----
   if (createdProject) {
     return (
-      <main className="min-h-screen bg-[#09090b] px-4 py-10 text-white sm:px-6">
-        <div className="mx-auto max-w-2xl rounded-2xl border border-emerald-500/30 bg-[#111114] p-6 sm:p-8">
-          <div className="mb-5 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-500/10">
-            <CheckCircle2 className="h-8 w-8 text-emerald-400" />
+      <div className="mx-auto max-w-2xl">
+        <section className="rounded-xl border border-emerald-400/20 bg-emerald-400/5 p-5">
+          <div className="flex items-start gap-3">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-lg border border-emerald-400/20 bg-emerald-400/10">
+              <CheckCircle2 className="size-5 text-emerald-300" />
+            </div>
+            <div>
+              <h2 className="text-sm font-semibold text-white">
+                Project created
+              </h2>
+              <p className="mt-1 text-xs leading-5 text-zinc-400">
+                Your transaction is confirmed on Sepolia. The project budget is
+                now locked in the escrow contract.
+              </p>
+            </div>
           </div>
 
-          <h1 className="text-2xl font-semibold">Project created successfully</h1>
-
-          <p className="mt-2 text-sm leading-6 text-zinc-400">
-            Your transaction has been confirmed on Sepolia. The project budget
-            is now locked in the escrow contract according to its rules.
-          </p>
-
           {createdProject.id && (
-            <div className="mt-6 rounded-xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-sm text-zinc-400">Project ID</p>
-              <p className="mt-1 break-all text-lg font-semibold">
+            <div className={`${panel} mt-4 p-4`}>
+              <p className="text-xs text-zinc-400">Project ID</p>
+              <p className="mt-1 break-all text-xl font-semibold text-white">
                 #{createdProject.id}
               </p>
             </div>
@@ -402,376 +386,338 @@ export default function NewProjectPage() {
             href={`https://sepolia.etherscan.io/tx/${createdProject.hash}`}
             target="_blank"
             rel="noreferrer"
-            className="mt-5 inline-flex items-center gap-2 text-sm text-violet-300 hover:text-violet-200"
+            className="mt-4 inline-flex items-center gap-1.5 text-xs text-emerald-300 hover:text-emerald-200"
           >
             View transaction on Etherscan
-            <ExternalLink className="h-4 w-4" />
+            <ExternalLink className="size-3.5" />
           </a>
 
-          <div className="mt-8 flex flex-wrap gap-3">
+          <div className="mt-5 flex flex-wrap gap-2">
             {createdProject.id && (
               <Link
                 href={`/projects/${createdProject.id}`}
-                className="rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium hover:bg-violet-500"
+                className="inline-flex h-8 items-center rounded-md bg-emerald-400 px-3 text-sm font-medium text-black hover:bg-emerald-300"
               >
                 View project
               </Link>
             )}
-
             <Link
               href="/projects"
-              className="rounded-lg border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-200 hover:bg-white/5"
+              className="inline-flex h-8 items-center rounded-md border border-white/10 px-3 text-sm text-zinc-200 hover:bg-white/5"
             >
               All projects
             </Link>
-
-            <button
-              type="button"
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => {
                 setCreatedProject(null);
                 setFreelancer("");
                 setMilestones([createMilestone()]);
                 setError("");
               }}
-              className="rounded-lg border border-white/10 px-4 py-2.5 text-sm font-medium text-zinc-200 hover:bg-white/5"
+              className="border-white/10 text-zinc-200"
             >
               Create another
-            </button>
+            </Button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  // ---- Gate states ----
+  if (!isConnected) {
+    return (
+      <section
+        className={`${panel} flex flex-col items-start gap-3 p-5 sm:flex-row sm:items-center sm:justify-between`}
+      >
+        <div className="flex items-center gap-3">
+          <div className="flex size-10 items-center justify-center rounded-lg border border-emerald-400/20 bg-emerald-400/10">
+            <Wallet className="size-5 text-emerald-300" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-white">
+              Connect your wallet
+            </h2>
+            <p className="text-xs text-zinc-400">
+              Connect MetaMask to create and fund an escrow project.
+            </p>
+            {walletError && (
+              <p role="alert" className="mt-1 text-xs text-red-300">
+                {walletError}
+              </p>
+            )}
           </div>
         </div>
-      </main>
+
+        <Button
+          onClick={() => void connectWallet()}
+          disabled={isConnecting}
+          className="bg-emerald-400 text-black hover:bg-emerald-300"
+        >
+          {isConnecting ? "Connecting..." : "Connect MetaMask"}
+        </Button>
+      </section>
+    );
+  }
+
+  if (!isCorrectNetwork) {
+    return (
+      <section className="flex items-start gap-3 rounded-xl border border-amber-400/20 bg-amber-400/5 p-4">
+        <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-300" />
+        <div>
+          <p className="text-sm font-medium text-amber-200">
+            Switch to Sepolia
+          </p>
+          <p className="text-xs text-zinc-400">
+            Change your MetaMask network to Ethereum Sepolia to continue.
+          </p>
+        </div>
+      </section>
     );
   }
 
   return (
-    <main className="min-h-screen bg-[#09090b] px-4 py-8 text-white sm:px-6 lg:px-8">
-      <div className="mx-auto max-w-4xl">
-        <Link
-          href="/projects"
-          className="mb-6 inline-flex items-center gap-2 text-sm text-zinc-400 transition hover:text-white"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Back to projects
-        </Link>
+    <div className="mx-auto max-w-3xl space-y-5 sm:space-y-6">
+      <Link
+        href="/projects"
+        className="inline-flex items-center gap-1.5 text-xs text-zinc-400 transition hover:text-white"
+      >
+        <ArrowLeft className="size-3.5" />
+        Back to projects
+      </Link>
 
-        <div className="mb-8">
-          <p className="text-sm font-medium text-violet-400">ESCROW MANAGEMENT</p>
-          <h1 className="mt-2 text-3xl font-semibold tracking-tight">
-            Create a project
-          </h1>
-          <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-400">
-            Define the work, assign a freelancer, and divide the budget into
-            milestones. The total budget will be deposited into the escrow
-            contract when you confirm the transaction.
-          </p>
-        </div>
-
-        {!isConnected ? (
-          <section className="mb-6 flex flex-col gap-4 rounded-xl border border-amber-500/20 bg-amber-500/5 p-5 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex gap-3">
-              <Wallet className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
-              <div>
-                <h2 className="font-medium">Wallet not connected</h2>
-                <p className="mt-1 text-sm text-zinc-400">
-                  Connect MetaMask to create and fund an escrow project.
-                </p>
-              </div>
+      <form
+        onSubmit={handleSubmit}
+        noValidate
+        className="space-y-5 sm:space-y-6"
+      >
+        {/* Freelancer */}
+        <section className={`${panel} p-4 sm:p-5`}>
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex size-9 items-center justify-center rounded-lg border border-emerald-400/20 bg-emerald-400/10">
+              <Wallet className="size-4 text-emerald-300" />
             </div>
-
-            <button
-              type="button"
-              onClick={() => void connectWallet()}
-              disabled={isConnecting}
-              className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg bg-violet-600 px-4 py-2.5 text-sm font-medium hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isConnecting && <Loader2 className="h-4 w-4 animate-spin" />}
-              {isConnecting ? "Connecting..." : "Connect wallet"}
-            </button>
-          </section>
-        ) : !isCorrectNetwork ? (
-          <section className="mb-6 flex gap-3 rounded-xl border border-amber-500/20 bg-amber-500/5 p-5">
-            <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
             <div>
-              <h2 className="font-medium">Switch to Sepolia</h2>
-              <p className="mt-1 text-sm leading-6 text-zinc-400">
-                Your wallet is connected, but it is not on the Sepolia test
-                network. Switch networks in MetaMask before creating the project.
+              <h2 className="text-sm font-semibold text-white">Freelancer</h2>
+              <p className="text-xs text-zinc-400">
+                The wallet that will complete the work.
               </p>
             </div>
-          </section>
-        ) : (
-          <section className="mb-6 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
-            <div className="flex items-center gap-2 text-sm font-medium text-emerald-300">
-              <CheckCircle2 className="h-4 w-4" />
-              Wallet connected to Sepolia
+          </div>
+
+          <label
+            htmlFor="freelancer"
+            className="mb-1.5 block text-xs font-medium text-zinc-300"
+          >
+            Wallet address
+          </label>
+          <input
+            id="freelancer"
+            type="text"
+            value={freelancer}
+            onChange={(event) => setFreelancer(event.target.value)}
+            placeholder="0x..."
+            autoComplete="off"
+            spellCheck={false}
+            disabled={isSubmitting}
+            aria-invalid={!!freelancerHint}
+            aria-describedby="freelancer-hint"
+            className={`${inputClass} font-mono ${
+              freelancerHint ? "border-red-400/40 focus:border-red-400/60" : ""
+            }`}
+          />
+          <p
+            id="freelancer-hint"
+            className={`mt-1.5 text-xs ${
+              freelancerHint ? "text-red-300" : "text-zinc-500"
+            }`}
+          >
+            {freelancerHint ||
+              "Double-check this address. Blockchain transactions can't be reversed."}
+          </p>
+        </section>
+
+        {/* Milestones */}
+        <section className={`${panel} p-4 sm:p-5`}>
+          <div className="mb-4 flex items-center gap-3">
+            <div className="flex size-9 items-center justify-center rounded-lg border border-sky-400/20 bg-sky-400/10">
+              <FileText className="size-4 text-sky-300" />
             </div>
-            <p className="mt-2 break-all font-mono text-xs text-zinc-400">
-              {address}
-            </p>
-          </section>
-        )}
-
-        <form onSubmit={handleSubmit} className="space-y-6">
-          <section className="rounded-2xl border border-white/10 bg-[#111114] p-5 sm:p-6">
-            <div className="mb-5 flex items-center gap-3">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-500/10">
-                <Wallet className="h-5 w-5 text-violet-300" />
-              </div>
-              <div>
-                <h2 className="font-semibold">Freelancer details</h2>
-                <p className="mt-1 text-sm text-zinc-400">
-                  Specify the wallet that will complete the work.
-                </p>
-              </div>
+            <div>
+              <h2 className="text-sm font-semibold text-white">Milestones</h2>
+              <p className="text-xs text-zinc-400">
+                Deliverables with individual budgets.
+              </p>
             </div>
+          </div>
 
-            <label
-              htmlFor="freelancer"
-              className="mb-2 block text-sm font-medium text-zinc-300"
-            >
-              Freelancer wallet address
-            </label>
-            <input
-              id="freelancer"
-              type="text"
-              value={freelancer}
-              onChange={(event) => setFreelancer(event.target.value)}
-              placeholder="0x..."
-              autoComplete="off"
-              spellCheck={false}
-              required
-              className="w-full rounded-lg border border-white/10 bg-black/20 px-4 py-3 font-mono text-sm outline-none transition placeholder:text-zinc-600 focus:border-violet-500"
-            />
-            <p className="mt-2 text-xs leading-5 text-zinc-500">
-              Double-check this address before submitting. Transactions on the
-              blockchain cannot simply be reversed.
-            </p>
-          </section>
-
-          <section className="rounded-2xl border border-white/10 bg-[#111114] p-5 sm:p-6">
-            <div className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-500/10">
-                  <FileText className="h-5 w-5 text-sky-300" />
+          <div className="space-y-3">
+            {milestones.map((milestone, index) => (
+              <div
+                key={milestone.id}
+                className="rounded-lg border border-white/10 bg-white/[0.02] p-3 sm:p-4"
+              >
+                <div className="mb-3 flex items-center justify-between gap-3">
+                  <h3 className="text-xs font-medium text-zinc-200">
+                    Milestone {index + 1}
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => removeMilestone(milestone.id)}
+                    disabled={milestones.length === 1 || isSubmitting}
+                    aria-label={`Remove milestone ${index + 1}`}
+                    className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-zinc-400 transition hover:bg-red-500/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-30"
+                  >
+                    <Trash2 className="size-3.5" />
+                    Remove
+                  </button>
                 </div>
-                <div>
-                  <h2 className="font-semibold">Project milestones</h2>
-                  <p className="mt-1 text-sm text-zinc-400">
-                    Break the work into deliverables with individual budgets.
-                  </p>
-                </div>
-              </div>
 
-              <span className="text-sm text-zinc-500">
-                {milestones.length}/{MAX_MILESTONES}
-              </span>
-            </div>
-
-            <div className="space-y-4">
-              {milestones.map((milestone, index) => (
-                <div
-                  key={milestone.id}
-                  className="rounded-xl border border-white/10 bg-white/[0.02] p-4 sm:p-5"
-                >
-                  <div className="mb-4 flex items-center justify-between gap-3">
-                    <h3 className="font-medium">
-                      Milestone {index + 1}
-                    </h3>
-
-                    <button
-                      type="button"
-                      onClick={() => removeMilestone(milestone.id)}
-                      disabled={milestones.length === 1 || isSubmitting}
-                      aria-label={`Remove milestone ${index + 1}`}
-                      className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs text-zinc-400 transition hover:bg-red-500/10 hover:text-red-300 disabled:cursor-not-allowed disabled:opacity-30"
+                <div className="space-y-3">
+                  <div>
+                    <label
+                      htmlFor={`description-${milestone.id}`}
+                      className="mb-1.5 block text-xs text-zinc-400"
                     >
-                      <Trash2 className="h-4 w-4" />
-                      Remove
-                    </button>
+                      Description
+                    </label>
+                    <textarea
+                      id={`description-${milestone.id}`}
+                      value={milestone.description}
+                      onChange={(event) =>
+                        updateMilestone(
+                          milestone.id,
+                          "description",
+                          event.target.value,
+                        )
+                      }
+                      placeholder="Describe the work or deliverable..."
+                      rows={2}
+                      maxLength={500}
+                      disabled={isSubmitting}
+                      className={`${inputClass} resize-y`}
+                    />
                   </div>
 
-                  <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <div>
                       <label
-                        htmlFor={`description-${milestone.id}`}
-                        className="mb-2 block text-sm text-zinc-300"
+                        htmlFor={`amount-${milestone.id}`}
+                        className="mb-1.5 block text-xs text-zinc-400"
                       >
-                        Description
+                        Budget (ETH)
                       </label>
-                      <textarea
-                        id={`description-${milestone.id}`}
-                        value={milestone.description}
+                      <div className="relative">
+                        <Coins className="pointer-events-none absolute left-3 top-1/2 size-3.5 -translate-y-1/2 text-zinc-500" />
+                        <input
+                          id={`amount-${milestone.id}`}
+                          type="text"
+                          inputMode="decimal"
+                          autoComplete="off"
+                          value={milestone.amount}
+                          onChange={(event) =>
+                            updateMilestone(
+                              milestone.id,
+                              "amount",
+                              sanitizeAmount(event.target.value),
+                            )
+                          }
+                          placeholder="0.05"
+                          disabled={isSubmitting}
+                          className={`${inputClass} pl-9`}
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label
+                        htmlFor={`deadline-${milestone.id}`}
+                        className="mb-1.5 block text-xs text-zinc-400"
+                      >
+                        Deadline
+                      </label>
+                      <input
+                        id={`deadline-${milestone.id}`}
+                        type="datetime-local"
+                        value={milestone.deadline}
+                        min={toLocalInput(new Date())}
                         onChange={(event) =>
                           updateMilestone(
                             milestone.id,
-                            "description",
-                            event.target.value
+                            "deadline",
+                            event.target.value,
                           )
                         }
-                        placeholder="Describe the work or deliverable..."
-                        rows={3}
-                        maxLength={500}
-                        required
                         disabled={isSubmitting}
-                        className="w-full resize-y rounded-lg border border-white/10 bg-black/20 px-4 py-3 text-sm outline-none transition placeholder:text-zinc-600 focus:border-violet-500 disabled:opacity-60"
+                        className={`${inputClass} min-w-0 text-zinc-200 [color-scheme:dark]`}
                       />
-                      <p className="mt-1 text-right text-xs text-zinc-600">
-                        {milestone.description.length}/500
-                      </p>
-                    </div>
-
-                    <div className="grid gap-4 sm:grid-cols-2">
-                      <div>
-                        <label
-                          htmlFor={`amount-${milestone.id}`}
-                          className="mb-2 block text-sm text-zinc-300"
-                        >
-                          Budget (ETH)
-                        </label>
-                        <div className="relative">
-                          <Coins className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-                          <input
-                            id={`amount-${milestone.id}`}
-                            type="number"
-                            min="0"
-                            step="any"
-                            inputMode="decimal"
-                            value={milestone.amount}
-                            onChange={(event) =>
-                              updateMilestone(
-                                milestone.id,
-                                "amount",
-                                event.target.value
-                              )
-                            }
-                            placeholder="0.05"
-                            required
-                            disabled={isSubmitting}
-                            className="w-full rounded-lg border border-white/10 bg-black/20 py-3 pl-10 pr-4 text-sm outline-none transition placeholder:text-zinc-600 focus:border-violet-500 disabled:opacity-60"
-                          />
-                        </div>
-                      </div>
-
-                      <div>
-                        <label
-                          htmlFor={`deadline-${milestone.id}`}
-                          className="mb-2 block text-sm text-zinc-300"
-                        >
-                          Deadline
-                        </label>
-                        <div className="relative">
-                          <CalendarDays className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-                          <input
-                            id={`deadline-${milestone.id}`}
-                            type="datetime-local"
-                            value={milestone.deadline}
-                            min={defaultDeadline().slice(0, 16)}
-                            onChange={(event) =>
-                              updateMilestone(
-                                milestone.id,
-                                "deadline",
-                                event.target.value
-                              )
-                            }
-                            required
-                            disabled={isSubmitting}
-                            className="w-full min-w-0 rounded-lg border border-white/10 bg-black/20 py-3 pl-10 pr-2 text-sm text-zinc-200 outline-none transition focus:border-violet-500 disabled:opacity-60"
-                          />
-                        </div>
-                      </div>
                     </div>
                   </div>
                 </div>
-              ))}
-            </div>
-
-            <button
-              type="button"
-              onClick={addMilestone}
-              disabled={
-                milestones.length >= MAX_MILESTONES || isSubmitting
-              }
-              className="mt-4 inline-flex items-center gap-2 rounded-lg border border-dashed border-white/15 px-4 py-3 text-sm font-medium text-zinc-300 transition hover:border-violet-500/50 hover:bg-violet-500/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Plus className="h-4 w-4" />
-              Add milestone
-            </button>
-          </section>
-
-          <section className="rounded-2xl border border-violet-500/20 bg-violet-500/[0.04] p-5 sm:p-6">
-            <div className="flex items-start gap-3">
-              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-violet-500/10">
-                <Coins className="h-5 w-5 text-violet-300" />
               </div>
-              <div className="min-w-0 flex-1">
-                <h2 className="font-semibold">Total project funding</h2>
-                <p className="mt-1 text-sm text-zinc-400">
-                  The sum of all milestone budgets will be sent to the escrow
-                  contract in one transaction.
-                </p>
-                <p className="mt-4 break-all text-3xl font-semibold tracking-tight">
-                  {totalWei === null ? "—" : displayETH(totalWei)}
-                  <span className="ml-2 text-base font-medium text-zinc-400">
-                    ETH
-                  </span>
-                </p>
-                {totalWei !== null && (
-                  <p className="mt-2 break-all text-xs text-zinc-500">
-                    {totalWei.toString()} wei
-                  </p>
-                )}
-                <p className="mt-3 text-xs leading-5 text-zinc-500">
-                  You will also need Sepolia ETH to pay the transaction gas fee.
-                  Review all addresses, milestone budgets, and deadlines before
-                  confirming in MetaMask.
-                </p>
-              </div>
-            </div>
-          </section>
-
-          {error && (
-            <div
-              role="alert"
-              className="flex gap-3 rounded-xl border border-red-500/20 bg-red-500/5 p-4 text-sm text-red-300"
-            >
-              <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
-              <p className="break-words">{error}</p>
-            </div>
-          )}
-
-          <div className="flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
-            <Link
-              href="/projects"
-              className="inline-flex items-center justify-center rounded-lg border border-white/10 px-5 py-3 text-sm font-medium text-zinc-300 transition hover:bg-white/5"
-            >
-              Cancel
-            </Link>
-
-            <button
-              type="submit"
-              disabled={
-                isSubmitting ||
-                !isConnected ||
-                !isCorrectNetwork ||
-                totalWei === null
-              }
-              className="inline-flex items-center justify-center gap-2 rounded-lg bg-violet-600 px-5 py-3 text-sm font-semibold transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {isSubmitting ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {`Waiting for confirmation...`}
-                </>
-              ) : (
-                <>
-                  <Wallet className="h-4 w-4" />
-                  Create and fund project
-                </>
-              )}
-            </button>
+            ))}
           </div>
-        </form>
-      </div>
-    </main>
+
+          <button
+            type="button"
+            onClick={addMilestone}
+            disabled={milestones.length >= MAX_MILESTONES || isSubmitting}
+            className="mt-3 inline-flex items-center gap-1.5 rounded-md border border-dashed border-white/15 px-3 py-2 text-xs font-medium text-zinc-300 transition hover:border-emerald-400/40 hover:bg-emerald-400/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Plus className="size-3.5" />
+            Add milestone
+          </button>
+        </section>
+
+        {error && (
+          <section
+            role="alert"
+            className="flex items-start gap-3 rounded-xl border border-red-400/20 bg-red-400/5 p-3"
+          >
+            <CircleAlert className="mt-0.5 size-4 shrink-0 text-red-300" />
+            <p className="break-words text-xs text-red-300">{error}</p>
+          </section>
+        )}
+
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
+          <p className="text-xs text-zinc-500 sm:mr-auto">
+            The total of all milestones is sent to escrow in one transaction.
+            You also need Sepolia ETH for gas.
+          </p>
+
+          <Link
+            href="/projects"
+            className="inline-flex h-9 items-center justify-center rounded-md border border-white/10 px-4 text-sm text-zinc-300 transition hover:bg-white/5"
+          >
+            Cancel
+          </Link>
+
+          <Button
+            type="submit"
+            disabled={
+              isSubmitting ||
+              !isConnected ||
+              !isCorrectNetwork ||
+              !!freelancerHint
+            }
+            className="bg-emerald-400 text-black hover:bg-emerald-300"
+          >
+            {isSubmitting ? (
+              <>
+                <Loader2 className="size-4 animate-spin" />
+                Waiting for confirmation...
+              </>
+            ) : (
+              <>
+                <Wallet className="size-4" />
+                Create and fund project
+              </>
+            )}
+          </Button>
+        </div>
+      </form>
+    </div>
   );
 }
