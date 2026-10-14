@@ -723,50 +723,48 @@ export default function ProjectDetailsPage({
 
       {/* Inline confirmation replaces window.confirm */}
       {confirmation && (
-        <section
-          role="alertdialog"
-          aria-label="Confirm transaction"
-          aria-modal="false"
-          className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-4"
-        >
-          <div className="flex items-start gap-3">
-            <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-300" />
-
-            <div className="min-w-0 flex-1">
-              <h2 className="text-sm font-semibold text-amber-200">
-                Confirm action
-              </h2>
-
-              <p className="mt-1 text-xs leading-5 text-zinc-300">
-                {confirmation.message}
-              </p>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={isActing}
-                  onClick={() => {
-                    const action = confirmation.action;
-                    setConfirmation(null);
-                    action();
-                  }}
-                  className={btnPrimary}
-                >
-                  Confirm
-                </button>
-
-                <button
-                  type="button"
-                  disabled={isActing}
-                  onClick={() => setConfirmation(null)}
-                  className={btnOutline}
-                >
-                  Cancel
-                </button>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div
+            role="alertdialog"
+            aria-modal="true"
+            aria-label="Confirm transaction"
+            className="w-full max-w-md rounded-xl border border-amber-400/20 bg-[#111113] p-5"
+          >
+            <div className="flex items-start gap-3">
+              <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-300" />
+              <div className="min-w-0 flex-1">
+                <h2 className="text-sm font-semibold text-amber-200">
+                  Confirm action
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-zinc-300">
+                  {confirmation.message}
+                </p>
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="button"
+                    disabled={isActing}
+                    onClick={() => {
+                      const action = confirmation.action;
+                      setConfirmation(null);
+                      action();
+                    }}
+                    className={btnPrimary}
+                  >
+                    Confirm
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isActing}
+                    onClick={() => setConfirmation(null)}
+                    className={btnOutline}
+                  >
+                    Cancel
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </section>
+        </div>
       )}
 
       {isActing && (
