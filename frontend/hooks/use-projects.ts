@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
@@ -15,7 +14,7 @@ type UseProjectsResult = {
 };
 
 export function useProjects(
-  walletAddress: string | null | undefined
+  walletAddress: string | null | undefined,
 ): UseProjectsResult {
   const [projects, setProjects] = useState<WalletProject[]>([]);
   const [milestones, setMilestones] = useState<
@@ -40,15 +39,12 @@ export function useProjects(
 
     try {
       const result = await loadWalletProjects(walletAddress);
-
       setProjects(result.projects);
       setMilestones(result.milestones);
       setLatestBlock(result.latestBlock);
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to load escrow projects."
+        err instanceof Error ? err.message : "Failed to load escrow projects.",
       );
       setProjects([]);
       setMilestones({});
@@ -59,53 +55,8 @@ export function useProjects(
   }, [walletAddress]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function load() {
-      if (!walletAddress) {
-        setProjects([]);
-        setMilestones({});
-        setLatestBlock(null);
-        setError(null);
-        setIsLoading(false);
-        return;
-      }
-
-      setIsLoading(true);
-      setError(null);
-
-      try {
-        const result = await loadWalletProjects(walletAddress);
-
-        if (cancelled) return;
-
-        setProjects(result.projects);
-        setMilestones(result.milestones);
-        setLatestBlock(result.latestBlock);
-      } catch (err) {
-        if (cancelled) return;
-
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Failed to load escrow projects."
-        );
-        setProjects([]);
-        setMilestones({});
-        setLatestBlock(null);
-      } finally {
-        if (!cancelled) {
-          setIsLoading(false);
-        }
-      }
-    }
-
-    void load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [walletAddress]);
+    void refreshProjects();
+  }, [refreshProjects]);
 
   return {
     projects,
