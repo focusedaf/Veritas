@@ -1,6 +1,11 @@
 "use client";
 
-import { CheckCircle2, Clock3, FileText, Scale } from "lucide-react";
+import {
+  CheckCircle2,
+  Clock3,
+  FileText,
+  Scale,
+} from "lucide-react";
 import type { ProjectMilestone } from "@/types/project";
 
 type MilestoneListProps = {
@@ -28,6 +33,10 @@ function getStatusStyle(status: ProjectMilestone["status"]) {
   }
 }
 
+function isTerminalStatus(status: ProjectMilestone["status"]) {
+  return ["Paid", "Refunded", "Split"].includes(status);
+}
+
 export function MilestoneList({
   milestones,
   onSelect,
@@ -45,9 +54,9 @@ export function MilestoneList({
     <div className="space-y-3">
       {milestones.map((milestone) => {
         const selected = selectedIndex === milestone.index;
-        const isComplete =
-          milestone.status === "Paid" || milestone.status === "Refunded";
-        const Icon = isComplete
+        const complete = isTerminalStatus(milestone.status);
+
+        const Icon = complete
           ? CheckCircle2
           : milestone.status === "Disputed"
             ? Scale
@@ -55,11 +64,17 @@ export function MilestoneList({
               ? FileText
               : Clock3;
 
+        const overdue =
+          milestone.deadline > 0 &&
+          milestone.deadline * 1000 < Date.now() &&
+          !complete;
+
         return (
           <button
             key={milestone.index}
             type="button"
             onClick={() => onSelect?.(milestone)}
+            aria-pressed={onSelect ? selected : undefined}
             className={`w-full rounded-xl border p-4 text-left transition-colors ${
               selected
                 ? "border-emerald-400/40 bg-emerald-400/5"
@@ -76,7 +91,7 @@ export function MilestoneList({
                   <p className="font-medium text-white">
                     Milestone {milestone.index + 1}
                   </p>
-                  <p className="mt-1 wrap-break-word text-sm text-zinc-400">
+                  <p className="mt-1 break-words text-sm text-zinc-400">
                     {milestone.description}
                   </p>
                 </div>
@@ -89,11 +104,16 @@ export function MilestoneList({
               </span>
             </div>
 
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs text-zinc-500">
-              <span>{milestone.amountETH} ETH</span>
-              <span>
-                {milestone.deadline
-                  ? `Deadline: ${new Date(milestone.deadline * 1000).toLocaleDateString()}`
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <span className="text-zinc-400">
+                {milestone.amountETH} ETH
+              </span>
+
+              <span className={overdue ? "text-red-300" : "text-zinc-500"}>
+                {milestone.deadline > 0
+                  ? `${overdue ? "Overdue · " : "Deadline: "}${new Date(
+                      milestone.deadline * 1000,
+                    ).toLocaleDateString()}`
                   : "No deadline"}
               </span>
             </div>
